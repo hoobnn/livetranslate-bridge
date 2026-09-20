@@ -28,7 +28,7 @@ struct SettingsView: View {
                 VoiceSettings(model: model)
             }
         }
-        .frame(width: 520)
+        .frame(width: 600)
         .scenePadding(.top)
     }
 }

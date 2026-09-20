@@ -12,10 +12,12 @@ struct SubtitleView: View {
 
     var body: some View {
         transcriptList
-            .background(.background.secondary)
+            .background { AppCanvas() }
             .safeAreaInset(edge: .top, spacing: 0) { header }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 LogPane(model: log, isExpanded: $isLogExpanded)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
             }
             .toolbar { toolbarItems }
     }
@@ -33,32 +35,38 @@ struct SubtitleView: View {
         // that fits is used: everything on one line when there is room,
         // otherwise the pickers wrap to a second line under the status, where
         // they have the whole width to themselves and Start stays put.
-        ViewThatFits(in: .horizontal) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 10) {
                 statusPill
-                Spacer(minLength: 10)
-                controls
+                Spacer(minLength: 8)
+
+                if model.isRunning {
+                    Text(sessionSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
                 transport
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    statusPill
-                    Spacer(minLength: 8)
-                    transport
-                }
-                HStack(spacing: 10) {
-                    controls
-                    Spacer(minLength: 0)
-                }
+            HStack(spacing: 12) {
+                controls
+                Spacer(minLength: 0)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .background(.bar)
-        .overlay(alignment: .bottom) {
-            Divider().opacity(0.5)
-        }
+        .padding(12)
+        .glassCard(radius: 18)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    private var sessionSummary: String {
+        let mode = model.mode.label
+        let mine = Language.named(model.myLanguage)?.menuLabel ?? model.myLanguage
+        let theirs = Language.named(model.theirLanguage)?.menuLabel ?? model.theirLanguage
+        return "\(mode) · \(mine) ⇄ \(theirs)"
     }
 
     private var statusPill: some View {
@@ -74,14 +82,20 @@ struct SubtitleView: View {
         // Which sides are listened to, and what is done with them: the
         // two questions Start answers, next to the languages it answers
         // them in.
-        ScopePicker(model: model)
+        SessionControlGroup(t("subtitles.scope")) {
+            ScopePicker(model: model)
+        }
 
-        ModePicker(model: model)
+        SessionControlGroup(t("subtitles.mode")) {
+            ModePicker(model: model)
+        }
 
         // The two languages read as one control, because the pair is the
         // setting: "they speak X, I speak Y". A single picker would leave
         // the other half of a bidirectional call unexplained.
-        LanguagePair(model: model)
+        SessionControlGroup(t("settings.translation.languages")) {
+            LanguagePair(model: model)
+        }
     }
 
     private var transport: some View {
@@ -158,7 +172,7 @@ struct SubtitleView: View {
                             )
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, Theme.pageInset)
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -293,7 +307,7 @@ private struct EntryCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 9)
         .padding(.horizontal, 13)
-        .glassCard(radius: Theme.bubbleRadius)
+        .contentCard(radius: Theme.bubbleRadius, accent: accent)
         // The in-progress card is marked so the eye knows where the text is
         // still changing — a tinted edge rather than a second background, so
         // it stays legible against glass in both appearances. It sits on the
@@ -344,6 +358,32 @@ private struct EntryCard: View {
         Text(entry.timeLabel)
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.tertiary)
+    }
+}
+
+// MARK: - session controls
+
+/// Gives each compact control a readable name without turning the live header
+/// into a settings form. The labels establish a clear scan order and remain
+/// visible when the symbols themselves are unfamiliar.
+private struct SessionControlGroup<Content: View>: View {
+    private let title: String
+    @ViewBuilder private let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            content
+        }
+        .fixedSize()
     }
 }
 
@@ -539,7 +579,7 @@ private struct StatusPill: View {
         .padding(.leading, 9)
         .padding(.trailing, 11)
         .padding(.vertical, 5)
-        .glassCard(radius: 999)
+        .statusSurface(color)
         .help(status.label)
         .animation(.easeInOut(duration: 0.2), value: color)
         .animation(.snappy(duration: 0.2), value: isSpeaking)
@@ -609,7 +649,7 @@ private struct TransportButton: View {
         // Regular rather than large: it is still the row's only filled
         // button, which is what makes it the primary one — at large it also
         // set the height of the whole bar.
-        .controlSize(.regular)
+        .controlSize(.large)
         .tint(isRunning ? .red : .accentColor)
         .keyboardShortcut(.return, modifiers: .command)
     }
@@ -627,24 +667,28 @@ private struct EmptyState: View {
     let scope: SubtitleModel.CaptureScope
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Image(systemName: symbol)
-                .font(.system(size: 40, weight: .light))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 34, weight: .medium))
+                .foregroundStyle(.tint)
                 .symbolEffect(.pulse, isActive: isWaiting)
-                .padding(.bottom, 2)
+                .frame(width: 72, height: 72)
+                .background(.tint.opacity(0.10), in: Circle())
+                .overlay { Circle().strokeBorder(.tint.opacity(0.14), lineWidth: 1) }
+                .padding(.bottom, 4)
 
             Text(title)
-                .font(.title3.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.primary)
 
             Text(message)
                 .font(.callout)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 320)
+                .frame(maxWidth: 360)
         }
         .padding(40)
+        .accessibilityElement(children: .combine)
     }
 
     private var isWaiting: Bool {

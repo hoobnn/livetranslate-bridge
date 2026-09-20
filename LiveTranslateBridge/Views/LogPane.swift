@@ -16,7 +16,6 @@ struct LogPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Divider().opacity(0.6)
             header
             if isExpanded {
                 Divider().opacity(0.4)
@@ -24,7 +23,8 @@ struct LogPane: View {
                     .frame(height: Self.contentHeight)
             }
         }
-        .background(.bar)
+        .glassCard(radius: 14)
+        .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
         .animation(.snappy(duration: 0.22), value: isExpanded)
     }
 
@@ -33,7 +33,9 @@ struct LogPane: View {
     private var header: some View {
         HStack(spacing: 10) {
             Button {
-                isExpanded.toggle()
+                withAnimation(.snappy(duration: 0.22)) {
+                    isExpanded.toggle()
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
@@ -72,7 +74,7 @@ struct LogPane: View {
             controls
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.vertical, 9)
         .contentShape(.rect)
     }
 
@@ -156,7 +158,7 @@ struct LogPane: View {
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(.background.secondary)
+            .background(.background.opacity(0.72))
             .overlay {
                 if model.lines.isEmpty {
                     Text(t("log.empty"))

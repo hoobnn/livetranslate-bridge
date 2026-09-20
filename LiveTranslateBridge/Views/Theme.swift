@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Shared shapes, spacing and surfaces.
@@ -33,16 +34,44 @@ enum Theme {
     static let sectionSpacing: CGFloat = 18
     static let rowSpacing: CGFloat = 10
 
+    /// A little more air around the controls that define a live session.
+    /// These values deliberately follow the system's 4/8 pt rhythm instead
+    /// of introducing a second spacing scale for the header.
+    static let pageInset: CGFloat = 18
+
     /// A radius that stays concentric with `outer` when inset by `inset`.
     static func concentric(inner outer: CGFloat, inset: CGFloat) -> CGFloat {
         max(4, outer - inset)
     }
 }
 
+/// The app's content plane. A very restrained ambient wash gives the floating
+/// system glass something to sample without turning a utility into a poster.
+/// It also separates the content plane from the sidebar in both appearances.
+struct AppCanvas: View {
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.055),
+                    Color.clear,
+                    Color.teal.opacity(0.025)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
+    }
+}
+
 /// A titled card: the repeated unit of the diagnostics pane.
 ///
-/// Header and body sit in one glass surface rather than a heading floating
-/// above a filled box, which is what macOS 26 sheets and inspectors do.
+/// Header and body sit in one calm content surface rather than adding another
+/// glass layer below the app's floating controls.
 struct Card<Content: View>: View {
     private let title: String
     private let systemImage: String
@@ -83,7 +112,7 @@ struct Card<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Theme.cardPadding)
-        .glassCard()
+        .contentCard()
     }
 }
 
@@ -101,6 +130,36 @@ extension View {
                     shape.strokeBorder(.separator.opacity(0.5), lineWidth: 1)
                 }
         }
+    }
+
+    /// A content surface rather than another glass layer. Liquid Glass is
+    /// reserved for navigation and floating controls; repeated transcript and
+    /// diagnostics cards stay quiet, opaque enough to read, and clearly below
+    /// that control layer.
+    func contentCard(
+        radius: CGFloat = Theme.cardRadius,
+        accent: Color? = nil
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        return background {
+            shape.fill(.background.opacity(0.82))
+            if let accent {
+                shape.fill(accent.opacity(0.045))
+            }
+        }
+        .overlay {
+            shape.strokeBorder(.separator.opacity(0.32), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.035), radius: 10, y: 3)
+    }
+
+    /// A low-emphasis pill used *inside* a glass control group. Making nested
+    /// glass sample glass produces muddy results, so status uses a tinted
+    /// content surface instead.
+    func statusSurface(_ color: Color, radius: CGFloat = 999) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        return background(color.opacity(0.11), in: shape)
+            .overlay { shape.strokeBorder(color.opacity(0.18), lineWidth: 1) }
     }
 
     /// A recessed well for content that sits *inside* a card — a log, a

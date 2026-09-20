@@ -21,10 +21,11 @@ struct DiagnosticsView: View {
                 fileSection
                 maintenanceSection
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Theme.pageInset)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .background(.background.secondary)
+        .background { AppCanvas() }
         .onAppear { diagnostics.refreshProcessReport() }
         .onDisappear { diagnostics.stopMetering() }
         .fileImporter(

@@ -35,7 +35,7 @@ struct LiveTranslateBridgeApp: App {
                 }
                 #endif
         }
-        .defaultSize(width: 860, height: 600)
+        .defaultSize(width: 1040, height: 680)
         .windowToolbarStyle(.unified)
 
         Settings {
