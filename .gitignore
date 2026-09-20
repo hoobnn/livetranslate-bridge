@@ -1,0 +1,16 @@
+# Node (commitlint / husky toolchain)
+node_modules/
+
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# 通话样本：含本机说话声，不进版本库
+*.wav
