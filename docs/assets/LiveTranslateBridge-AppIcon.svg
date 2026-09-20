@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="128" y1="80" x2="896" y2="944" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#123B78"/>
+      <stop offset="0.48" stop-color="#0969D8"/>
+      <stop offset="1" stop-color="#24B6D8"/>
+    </linearGradient>
+    <radialGradient id="topGlow" cx="0" cy="0" r="1" gradientTransform="translate(318 168) rotate(53) scale(720)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8E9FF" stop-opacity="0.54"/>
+      <stop offset="0.42" stop-color="#60BBFF" stop-opacity="0.17"/>
+      <stop offset="1" stop-color="#0B58BC" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="bottomShade" cx="0" cy="0" r="1" gradientTransform="translate(777 894) rotate(-133) scale(700)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#003B8F" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="#062752" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glassStroke" x1="246" y1="245" x2="791" y2="775" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.98"/>
+      <stop offset="0.5" stop-color="#ECF8FF" stop-opacity="0.91"/>
+      <stop offset="1" stop-color="#C9F5FF" stop-opacity="0.78"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="512" y1="365" x2="512" y2="659" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D8FAFF"/>
+    </linearGradient>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="26" stdDeviation="24" flood-color="#032654" flood-opacity="0.34"/>
+    </filter>
+    <filter id="waveShadow" x="-50%" y="-40%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#034B9D" flood-opacity="0.32"/>
+    </filter>
+    <clipPath id="canvas">
+      <rect width="1024" height="1024"/>
+    </clipPath>
+  </defs>
+
+  <!-- A square, unmasked background lets macOS apply its own continuous-corner mask. -->
+  <g clip-path="url(#canvas)">
+    <rect width="1024" height="1024" fill="url(#background)"/>
+    <rect width="1024" height="1024" fill="url(#topGlow)"/>
+    <rect width="1024" height="1024" fill="url(#bottomShade)"/>
+    <circle cx="820" cy="172" r="230" fill="#84E9FF" opacity="0.075"/>
+    <circle cx="178" cy="850" r="292" fill="#004DAF" opacity="0.11"/>
+
+    <!-- The paired bubbles form one balanced translation mark. -->
+    <g filter="url(#softShadow)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <g stroke="#073875" stroke-opacity="0.26" stroke-width="54" transform="translate(0 10)">
+        <path d="M432 322 C402 270 350 244 286 244 H256 C160 244 112 309 112 414 V551 C112 645 159 705 240 724 V812 L337 732 H356 C399 732 426 709 440 673"/>
+        <path d="M592 322 C622 270 674 244 738 244 H768 C864 244 912 309 912 414 V551 C912 645 865 705 784 724 V812 L687 732 H668 C625 732 598 709 584 673"/>
+      </g>
+      <g stroke="url(#glassStroke)" stroke-width="42">
+        <path d="M432 322 C402 270 350 244 286 244 H256 C160 244 112 309 112 414 V551 C112 645 159 705 240 724 V812 L337 732 H356 C399 732 426 709 440 673"/>
+        <path d="M592 322 C622 270 674 244 738 244 H768 C864 244 912 309 912 414 V551 C912 645 865 705 784 724 V812 L687 732 H668 C625 732 598 709 584 673"/>
+      </g>
+      <g stroke="#FFFFFF" stroke-opacity="0.34" stroke-width="8">
+        <path d="M414 319 C384 279 340 261 286 261 H258 C180 261 139 312 139 397"/>
+        <path d="M610 319 C640 279 684 261 738 261 H766 C844 261 885 312 885 397"/>
+      </g>
+    </g>
+
+    <!-- Five bars stay legible at 16 px and suggest live, bidirectional audio. -->
+    <g stroke="url(#wave)" stroke-width="38" stroke-linecap="round" filter="url(#waveShadow)">
+      <path d="M376 468 V556"/>
+      <path d="M444 414 V610"/>
+      <path d="M512 366 V658"/>
+      <path d="M580 414 V610"/>
+      <path d="M648 468 V556"/>
+    </g>
+    <g stroke="#FFFFFF" stroke-opacity="0.42" stroke-width="7" stroke-linecap="round">
+      <path d="M376 468 V507"/>
+      <path d="M444 414 V500"/>
+      <path d="M512 366 V491"/>
+      <path d="M580 414 V500"/>
+      <path d="M648 468 V507"/>
+    </g>
+  </g>
+</svg>
