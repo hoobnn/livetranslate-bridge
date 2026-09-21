@@ -12,6 +12,10 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
     private let translationPlayer = AVAudioPlayerNode()
     private let originalPlayer = AVAudioPlayerNode()
     private let lock = NSLock()
+    // AVAudioPlayerNode.stop() drains completion handlers synchronously. Those
+    // handlers must never wait for `lock`, which stop/flush hold while asking
+    // the node to stop.
+    private let flightLock = NSLock()
     private var isPrepared = false
     private var translationFormat: AVAudioFormat?
     private var originalFormat: AVAudioFormat?
@@ -26,7 +30,14 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
     }
 
     private var inFlight = 0
+    private var playbackGeneration = 0
     public var onPlaybackChange: (@Sendable (Bool) -> Void)?
+
+    /// The gains last asked for, kept so a change made while the route is down
+    /// — or before the graph is connected — is not lost, and so `start()` on a
+    /// reopened route comes up where the user left it.
+    private var originalVolume: Float = 1
+    private var translationVolume: Float = 1
 
     public init() {
         let callback = OriginalCallback()
@@ -90,8 +101,6 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
 
         engine.attach(translationPlayer)
         engine.attach(originalPlayer)
-        originalPlayer.volume = Self.clamped(originalVolume)
-        translationPlayer.volume = Self.clamped(translationVolume)
 
         do {
             try engine.connectNode(
@@ -105,6 +114,17 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
             try engine.connectNode(
                 originalPlayer, to: engine.mainMixerNode, format: nil
             )
+            // Gain belongs to the node's *output connection*, so it is set
+            // once that connection exists and before the engine is started.
+            // Written while only attached, it lands on a connection that is
+            // not there yet and the new one comes up at unity — which is what
+            // made the sliders look inert. Written after `engine.start()`, it
+            // reaches a live engine from under this lock and stalls instead.
+            // Between the two is the only correct place.
+            self.originalVolume = Self.clamped(originalVolume)
+            self.translationVolume = Self.clamped(translationVolume)
+            originalPlayer.volume = self.originalVolume
+            translationPlayer.volume = self.translationVolume
             try engine.start()
             originalPlaybackFormat = originalPlayer.outputFormat(forBus: 0)
             if let originalPlaybackFormat {
@@ -123,11 +143,31 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         isPrepared = true
     }
 
+    /// Applies new gains to a live route. Safe to call whether or not the
+    /// engine is running: the values are retained either way, so a slider
+    /// moved before the session starts still takes effect when it does.
+    public func setVolumes(original: Float, translation: Float) {
+        lock.lock()
+        let originalGain = Self.clamped(original)
+        let translationGain = Self.clamped(translation)
+        originalVolume = originalGain
+        translationVolume = translationGain
+        let live = isPrepared
+        lock.unlock()
+        // Applied outside the lock: this reaches a running engine, and a
+        // running engine must never be touched from under a lock the audio
+        // path also takes.
+        guard live else { return }
+        originalPlayer.volume = originalGain
+        translationPlayer.volume = translationGain
+    }
+
     public func stop() {
         lock.lock()
         defer { lock.unlock() }
         guard isPrepared else { return }
         isPrepared = false
+        let wasPlaying = resetInFlight()
         translationPlayer.stop()
         originalPlayer.stop()
         engine.stop()
@@ -137,8 +177,6 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         originalFormat = nil
         originalPlaybackFormat = nil
         originalConverter = nil
-        let wasPlaying = inFlight > 0
-        inFlight = 0
         if wasPlaying { onPlaybackChange?(false) }
     }
 
@@ -165,8 +203,11 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
             )
         }
 
+        flightLock.lock()
         let wasIdle = inFlight == 0
         inFlight += 1
+        let generation = playbackGeneration
+        flightLock.unlock()
         lock.unlock()
         if wasIdle { onPlaybackChange?(true) }
 
@@ -174,10 +215,14 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
             buffer, completionCallbackType: .dataPlayedBack
         ) { [weak self] _ in
             guard let self else { return }
-            self.lock.lock()
-            self.inFlight = max(0, self.inFlight - 1)
+            self.flightLock.lock()
+            guard self.playbackGeneration == generation, self.inFlight > 0 else {
+                self.flightLock.unlock()
+                return
+            }
+            self.inFlight -= 1
             let nowIdle = self.inFlight == 0
-            self.lock.unlock()
+            self.flightLock.unlock()
             if nowIdle { self.onPlaybackChange?(false) }
         }
     }
@@ -255,8 +300,7 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
     public func flush() {
         lock.lock()
         guard isPrepared else { lock.unlock(); return }
-        let wasPlaying = inFlight > 0
-        inFlight = 0
+        let wasPlaying = resetInFlight()
         translationPlayer.stop()
         originalPlayer.stop()
         try? translationPlayer.playAudio()
@@ -266,8 +310,17 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
     }
 
     public var isPlaying: Bool {
-        lock.lock(); defer { lock.unlock() }
+        flightLock.lock(); defer { flightLock.unlock() }
         return inFlight > 0
+    }
+
+    private func resetInFlight() -> Bool {
+        flightLock.lock()
+        defer { flightLock.unlock() }
+        let wasPlaying = inFlight > 0
+        inFlight = 0
+        playbackGeneration &+= 1
+        return wasPlaying
     }
 
     private static func clamped(_ volume: Float) -> Float {

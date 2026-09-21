@@ -78,6 +78,13 @@ nonisolated final class TranslationPlaybackPath: @unchecked Sendable {
         player?.enqueue(data)
     }
 
+    func setVolumes(original: Float, translation: Float) {
+        lock.lock()
+        let player = self.player
+        lock.unlock()
+        player?.setVolumes(original: original, translation: translation)
+    }
+
     @available(macOS 14.2, *)
     func enqueueOriginal(_ buffer: DownlinkTap.Buffer) {
         lock.lock()

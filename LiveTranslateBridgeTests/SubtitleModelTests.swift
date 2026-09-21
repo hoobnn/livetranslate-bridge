@@ -843,6 +843,25 @@ struct OtherPreferencePersistenceTests {
         }
     }
 
+    /// Volumes are live controls, so each change has to reach the engine and
+    /// the store on its own rather than being read once at Start. The engine
+    /// half needs a real device; what is checkable here is that every write
+    /// still lands clamped, including the ones made while a session runs.
+    @Test func volumeChangesAreClampedOnEveryWrite() {
+        withRestoredDefaults {
+            let model = SubtitleModel()
+            model.remoteOriginalVolume = 5
+            model.remoteTranslationVolume = -1
+            model.localOriginalVolume = 2.5
+            model.localTranslationVolume = -0.5
+
+            #expect(SubtitleModel().remoteOriginalVolume == 2)
+            #expect(SubtitleModel().remoteTranslationVolume == 0)
+            #expect(SubtitleModel().localOriginalVolume == 2)
+            #expect(SubtitleModel().localTranslationVolume == 0)
+        }
+    }
+
     @Test func zeroTranslationGainDisablesModelAudioPerDirection() {
         withRestoredDefaults {
             let model = SubtitleModel()

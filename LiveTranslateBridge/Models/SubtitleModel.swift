@@ -325,33 +325,87 @@ final class SubtitleModel {
         didSet { Defaults.remoteOutputDeviceUID = remoteOutputDeviceUID }
     }
 
+    /// The four gains are live controls, not session settings: someone
+    /// reaching for a volume slider is reacting to what they are hearing right
+    /// now, so each change is pushed straight at the running engine rather
+    /// than only stored for the next session.
+    ///
+    /// Each `didSet` hands the engine *only* the value that just changed, via
+    /// a mirror kept outside observation. Reading the sibling properties back
+    /// here instead would register an observable read inside the write that
+    /// SwiftUI is still performing, and the slider's next render would write
+    /// again — an invalidation loop that hangs the window on first layout.
     var remoteOriginalVolume = Defaults.remoteOriginalVolume {
-        didSet { Defaults.remoteOriginalVolume = Self.clampedVolume(remoteOriginalVolume) }
+        didSet {
+            let gain = Self.clampedVolume(remoteOriginalVolume)
+            Defaults.remoteOriginalVolume = gain
+            gains.remoteOriginal = gain
+            applyRemoteVolumes()
+        }
     }
 
     var remoteTranslationVolume = Defaults.remoteTranslationVolume {
         didSet {
-            Defaults.remoteTranslationVolume = Self.clampedVolume(remoteTranslationVolume)
+            let gain = Self.clampedVolume(remoteTranslationVolume)
+            Defaults.remoteTranslationVolume = gain
+            gains.remoteTranslation = gain
+            applyRemoteVolumes()
         }
     }
 
     var localOriginalVolume = Defaults.localOriginalVolume {
-        didSet { Defaults.localOriginalVolume = Self.clampedVolume(localOriginalVolume) }
+        didSet {
+            let gain = Self.clampedVolume(localOriginalVolume)
+            Defaults.localOriginalVolume = gain
+            gains.localOriginal = gain
+            applyLocalVolumes()
+        }
     }
 
     var localTranslationVolume = Defaults.localTranslationVolume {
         didSet {
-            Defaults.localTranslationVolume = Self.clampedVolume(localTranslationVolume)
+            let gain = Self.clampedVolume(localTranslationVolume)
+            Defaults.localTranslationVolume = gain
+            gains.localTranslation = gain
+            applyLocalVolumes()
         }
+    }
+
+    /// A plain, unobserved mirror of the four gains. It exists so the apply
+    /// path below never touches an observable property — see the note above.
+    private struct Gains {
+        var remoteOriginal = SubtitleModel.clampedVolume(Defaults.remoteOriginalVolume)
+        var remoteTranslation = SubtitleModel.clampedVolume(Defaults.remoteTranslationVolume)
+        var localOriginal = SubtitleModel.clampedVolume(Defaults.localOriginalVolume)
+        var localTranslation = SubtitleModel.clampedVolume(Defaults.localTranslationVolume)
+    }
+
+    @ObservationIgnored private var gains = Gains()
+
+    private func applyRemoteVolumes() {
+        // While the source app was left unmuted this lane must stay silent —
+        // see `replaysRemoteOriginal`. Outside a session it is `true`, so a
+        // slider moved before Start is simply remembered.
+        remotePlaybackPath.setVolumes(
+            original: Float(replaysRemoteOriginal ? gains.remoteOriginal : 0),
+            translation: Float(gains.remoteTranslation)
+        )
+    }
+
+    private func applyLocalVolumes() {
+        localPlaybackPath.setVolumes(
+            original: Float(gains.localOriginal),
+            translation: Float(gains.localTranslation)
+        )
     }
 
     private static func clampedVolume(_ value: Double) -> Double {
         min(max(value, 0), 2)
     }
 
-    /// Whether the far end hears our translation in our own voice rather than
-    /// the stock one. Only the uplink can use this: it is the only direction
-    /// whose speaker is us, and the only one that synthesises speech.
+    /// Whether each translated voice follows its input speaker. Our own side
+    /// clones once; the selected app can contain several speakers, so its
+    /// voice is refreshed for each reply.
     var clonesVoice = Defaults.clonesVoice {
         didSet { Defaults.clonesVoice = clonesVoice }
     }
@@ -551,6 +605,12 @@ final class SubtitleModel {
     }
 
 
+    /// Whether this session replays the far end's original through our mixer,
+    /// which is also what decided that the source app was muted. Pinned at
+    /// start because a tap's mute behaviour cannot be changed afterwards.
+    /// `true` outside a session so a slider moved before Start is honoured.
+    @ObservationIgnored private var replaysRemoteOriginal = true
+
     private var session: CallAudioSession?
     private var clients: [Direction: TranslationClient] = [:]
     @ObservationIgnored private var eventBatchers: [Direction: TranslationEventBatcher] = [:]
@@ -657,13 +717,15 @@ final class SubtitleModel {
             )
 
         if scope.captures(.remote) {
+            let wantsAudio = translates && remoteRouteReady
+                && remoteTranslationVolume > 0
             let downlink = makeClient(
                 direction: .remote,
                 credentials: credentials,
                 targetLanguage: translates ? myLanguage : nil,
                 sourceLanguage: theirLanguage,
-                wantsAudio: translates && remoteRouteReady
-                    && remoteTranslationVolume > 0
+                wantsAudio: wantsAudio,
+                voice: clonesVoice && wantsAudio ? .cloneEachReply : .preset
             )
             clients[.remote] = downlink
             downlinkPath.install(client: downlink)
@@ -696,7 +758,18 @@ final class SubtitleModel {
         session.capturesUplink = scope.captures(.local)
         session.capturesDownlink = scope.captures(.remote)
         session.uplinkDevice = inputDevice
-        session.mutesDownlinkSource = remoteRouteReady
+        // Muting the source app is only justified while we are actually
+        // replaying its original through our mixer. Starting at zero original
+        // gain we replay nothing, so muting it too would leave the user with
+        // silence and no way back — there the app keeps its own direct route
+        // and the tap only listens in.
+        //
+        // A tap's mute behaviour is fixed when it is created, so this is
+        // pinned for the session and recorded: the original lane has to stay
+        // silent for the rest of it, or raising the slider would stack our
+        // replay on top of the app's own audio.
+        replaysRemoteOriginal = remoteRouteReady && gains.remoteOriginal > 0
+        session.mutesDownlinkSource = replaysRemoteOriginal
         session.onDownlink = { [weak self] buffer in
             self?.forward(tapBuffer: buffer)
         }
@@ -761,6 +834,7 @@ final class SubtitleModel {
         uplinkPath.install(client: nil)
         remotePlaybackPath.stop()
         localPlaybackPath.stop()
+        replaysRemoteOriginal = true
         isSpeaking = false
         status = .idle
         callState = .idle
