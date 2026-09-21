@@ -34,7 +34,10 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
     public init() {}
     deinit { teardown() }
 
-    public func start(processObjectID: AudioObjectID) throws {
+    public func start(
+        processObjectID: AudioObjectID,
+        muteSource: Bool = false
+    ) throws {
         lock.lock()
         defer { lock.unlock() }
         guard tapID == 0 else { return }
@@ -46,8 +49,10 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
         )
         description.name = "\(Self.tapNamePrefix)-\(getpid())"
         description.isPrivate = true
-        // muteBehavior is left at its default (CATapUnmuted) so the user keeps
-        // hearing the call while we capture it.
+        // When the original is routed through our mixer, suppress the app's
+        // direct hardware path so it is heard once and the configured gain
+        // applies. Diagnostics leave this at `.unmuted`.
+        description.muteBehavior = muteSource ? .mutedWhenTapped : .unmuted
 
         var newTap: AudioObjectID = 0
         let tapStatus = AudioHardwareCreateProcessTap(description, &newTap)

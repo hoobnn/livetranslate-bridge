@@ -26,7 +26,9 @@ struct DiagnosticsView: View {
             .frame(maxWidth: .infinity)
         }
         .background { AppCanvas() }
-        .onAppear { diagnostics.refreshProcessReport() }
+        .onAppear {
+            diagnostics.refreshProcessReport(sourceBundleID: model.sourceBundleID)
+        }
         .onDisappear { diagnostics.stopMetering() }
         .fileImporter(
             isPresented: $isPickingFile,
@@ -48,7 +50,11 @@ struct DiagnosticsView: View {
             ProcessReport(report: diagnostics.processReport)
 
             Button {
-                withAnimation(.snappy) { diagnostics.refreshProcessReport() }
+                withAnimation(.snappy) {
+                    diagnostics.refreshProcessReport(
+                        sourceBundleID: model.sourceBundleID
+                    )
+                }
             } label: {
                 Label(t("diagnostics.process.recheck"), systemImage: "arrow.clockwise")
             }
@@ -72,7 +78,10 @@ struct DiagnosticsView: View {
                 if diagnostics.isMetering {
                     diagnostics.stopMetering()
                 } else {
-                    diagnostics.startMetering()
+                    diagnostics.startMetering(
+                        sourceBundleID: model.sourceBundleID,
+                        inputDevice: AudioInputDevice.named(uid: model.inputDeviceUID)
+                    )
                 }
             } label: {
                 Label(
@@ -165,9 +174,9 @@ private struct ProcessReport: View {
                 row(t("diagnostics.process.field.state"),
                     t("diagnostics.process.noCall"), mono: false)
 
-            case .found(let pid, let input, let output, let active):
+            case .found(let bundleID, let pid, let input, let output, let active):
                 row(t("diagnostics.process.field.process"),
-                    "\(callAudioBundleID) · \(t("status.pid", pid))")
+                    "\(bundleID) · \(t("status.pid", pid))")
                 row(t("diagnostics.process.field.input"), flag(input), mono: false)
                 row(t("diagnostics.process.field.output"), flag(output), mono: false)
                 row(t("diagnostics.process.field.state"),

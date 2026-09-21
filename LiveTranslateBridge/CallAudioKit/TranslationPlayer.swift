@@ -3,43 +3,53 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
-/// Plays the service's synthesised translation into a chosen output device.
-///
-/// The service returns 24 kHz mono Int16 in `response.audio.delta` chunks that
-/// arrive faster than real time — a whole sentence can land in a few hundred
-/// milliseconds. So this is a queue, not a pipe: chunks are scheduled on an
-/// `AVAudioPlayerNode`, which plays them back gaplessly at the right rate.
-///
-/// The output device matters. Routed at the speakers it is a talkback aid;
-/// routed at a loopback device that the user has also set as the system default
-/// input, it becomes our side of the call — Continuity relay reads the uplink
-/// from that default input, so whatever is played there is what the far end
-/// hears. See `AudioOutputDevice`.
+/// Plays a route's captured original and synthesised translation into one
+/// chosen output device with independent gains.
 nonisolated public final class TranslationPlayer: @unchecked Sendable {
-    /// The format of `response.audio.delta`, fixed by the model.
     private static let serviceSampleRate: Double = 24_000
 
     private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    private let translationPlayer = AVAudioPlayerNode()
+    private let originalPlayer = AVAudioPlayerNode()
     private let lock = NSLock()
     private var isPrepared = false
-    private var sourceFormat: AVAudioFormat?
+    private var translationFormat: AVAudioFormat?
+    private var originalFormat: AVAudioFormat?
+    private var originalPlaybackFormat: AVAudioFormat?
+    private var originalConverter: AVAudioConverter?
 
-    /// Chunks scheduled but not yet finished playing. Used to tell the UI that
-    /// translated speech is currently on the wire, which is what makes the
-    /// "speak my translation" mode legible rather than mysterious.
+    private let originalQueue: RealtimeAudioQueue
+    private let originalCallback: OriginalCallback
+
+    private final class OriginalCallback: @unchecked Sendable {
+        weak var owner: TranslationPlayer?
+    }
+
     private var inFlight = 0
     public var onPlaybackChange: (@Sendable (Bool) -> Void)?
 
-    public init() {}
+    public init() {
+        let callback = OriginalCallback()
+        originalCallback = callback
+        originalQueue = RealtimeAudioQueue(
+            label: "app.livetranslate.playback.original"
+        ) { [weak callback] buffer in
+            callback?.owner?.scheduleOriginal(buffer)
+        } onDrop: { count in
+            BridgeLog.audio.error(
+                "original playback queue dropped \(count, privacy: .public) buffers"
+            )
+        }
+        callback.owner = self
+    }
     deinit { stop() }
 
-    /// Opens the engine against `device`, or the system default when nil.
-    ///
-    /// Selecting the device has to happen on the engine's output *audio unit*
-    /// before the engine starts; `AVAudioEngine` has no device property of its
-    /// own on macOS.
-    public func start(device: AudioOutputDevice?) throws {
+    /// Opens the route against `device`, or the system default when nil.
+    public func start(
+        device: AudioOutputDevice?,
+        originalVolume: Float = 1,
+        translationVolume: Float = 1
+    ) throws {
         lock.lock()
         defer { lock.unlock() }
         guard !isPrepared else { return }
@@ -52,7 +62,7 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         ) else {
             throw CallAudioError("cannot build 24 kHz mono playback format")
         }
-        sourceFormat = format
+        translationFormat = format
 
         if let device {
             var status = OSStatus(kAudioUnitErr_InvalidElement)
@@ -74,21 +84,40 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
                 )
             }
             BridgeLog.audio.notice(
-                "translation playback routed to \(device.name, privacy: .public)"
+                "audio route bound to \(device.name, privacy: .public)"
             )
         }
 
-        engine.attach(player)
-        // Connected through the mixer at the service's format so the engine
-        // handles the 24 kHz → device-rate conversion; the player node is
-        // scheduled with buffers in that same format.
+        engine.attach(translationPlayer)
+        engine.attach(originalPlayer)
+        originalPlayer.volume = Self.clamped(originalVolume)
+        translationPlayer.volume = Self.clamped(translationVolume)
+
         do {
-            try engine.connectNode(player, to: engine.mainMixerNode, format: format)
+            try engine.connectNode(
+                translationPlayer, to: engine.mainMixerNode, format: format
+            )
+            // Connect both lanes before starting the engine. Reconnecting a
+            // player after the engine is live can leave AVAudioPlayerNode in
+            // a disconnected state on macOS even when the graph call itself
+            // succeeds. A nil format adopts the output route's native format;
+            // captured audio is converted to that format before scheduling.
+            try engine.connectNode(
+                originalPlayer, to: engine.mainMixerNode, format: nil
+            )
             try engine.start()
-            try player.playAudio()
+            originalPlaybackFormat = originalPlayer.outputFormat(forBus: 0)
+            if let originalPlaybackFormat {
+                BridgeLog.audio.notice(
+                    "original playback format: \(originalPlaybackFormat.sampleRate, privacy: .public) Hz \(originalPlaybackFormat.channelCount, privacy: .public) ch interleaved=\(originalPlaybackFormat.isInterleaved, privacy: .public)"
+                )
+            }
+            try translationPlayer.playAudio()
+            try originalPlayer.playAudio()
         } catch {
             engine.stop()
-            engine.detach(player)
+            engine.detach(translationPlayer)
+            engine.detach(originalPlayer)
             throw CallAudioError("cannot start playback engine: \(error)")
         }
         isPrepared = true
@@ -99,23 +128,34 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         defer { lock.unlock() }
         guard isPrepared else { return }
         isPrepared = false
-        player.stop()
+        translationPlayer.stop()
+        originalPlayer.stop()
         engine.stop()
-        engine.detach(player)
-        sourceFormat = nil
+        engine.detach(translationPlayer)
+        engine.detach(originalPlayer)
+        translationFormat = nil
+        originalFormat = nil
+        originalPlaybackFormat = nil
+        originalConverter = nil
         let wasPlaying = inFlight > 0
         inFlight = 0
         if wasPlaying { onPlaybackChange?(false) }
     }
 
-    /// Queues one `response.audio.delta` payload: little-endian Int16 at 24 kHz.
+    /// Queues one model audio chunk: little-endian Int16 at 24 kHz.
     public func enqueue(_ pcm: Data) {
         lock.lock()
-        guard isPrepared, let format = sourceFormat else { lock.unlock(); return }
+        guard isPrepared, let format = translationFormat else {
+            lock.unlock()
+            return
+        }
         let frames = pcm.count / MemoryLayout<Int16>.size
         guard frames > 0, let buffer = AVAudioPCMBuffer(
             pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)
-        ) else { lock.unlock(); return }
+        ) else {
+            lock.unlock()
+            return
+        }
 
         buffer.frameLength = AVAudioFrameCount(frames)
         pcm.withUnsafeBytes { raw in
@@ -130,8 +170,9 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         lock.unlock()
         if wasIdle { onPlaybackChange?(true) }
 
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) {
-            [weak self] _ in
+        translationPlayer.scheduleBuffer(
+            buffer, completionCallbackType: .dataPlayedBack
+        ) { [weak self] _ in
             guard let self else { return }
             self.lock.lock()
             self.inFlight = max(0, self.inFlight - 1)
@@ -141,23 +182,95 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         }
     }
 
-    /// Drops anything still queued — used when a session stops mid-sentence, so
-    /// the tail of a translation does not keep playing into a finished call.
+    @available(macOS 14.2, *)
+    public func enqueueOriginal(_ buffer: DownlinkTap.Buffer) {
+        originalQueue.enqueue(buffer)
+    }
+
+    public func enqueueOriginal(_ buffer: AVAudioPCMBuffer) {
+        originalQueue.enqueue(buffer)
+    }
+
+    private func scheduleOriginal(_ staged: AVAudioPCMBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isPrepared, let playbackFormat = originalPlaybackFormat,
+              let buffer = convertOriginal(staged, to: playbackFormat) else { return }
+
+        if originalFormat == nil {
+            originalFormat = staged.format
+            BridgeLog.audio.notice(
+                "original playback lane ready: \(staged.format.sampleRate, privacy: .public) Hz \(staged.format.channelCount, privacy: .public) ch"
+            )
+        }
+        guard originalFormat == staged.format else {
+            BridgeLog.audio.error("original playback format changed during the route")
+            return
+        }
+        originalPlayer.scheduleBuffer(buffer)
+    }
+
+    private func convertOriginal(
+        _ source: AVAudioPCMBuffer,
+        to format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        guard source.format.commonFormat == .pcmFormatFloat32,
+              format.commonFormat == .pcmFormatFloat32,
+              source.format.channelCount == format.channelCount else { return nil }
+
+        if originalFormat != source.format || originalConverter == nil {
+            originalConverter = AVAudioConverter(from: source.format, to: format)
+        }
+        guard let converter = originalConverter else { return nil }
+
+        let ratio = format.sampleRate / source.format.sampleRate
+        let capacity = AVAudioFrameCount(
+            ceil(Double(source.frameLength) * ratio) + 8
+        )
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: format, frameCapacity: capacity
+        ) else { return nil }
+
+        var supplied = false
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) {
+            _, inputStatus in
+            guard !supplied else {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return source
+        }
+        if status == .error {
+            BridgeLog.audio.error(
+                "cannot convert original audio: \("\(conversionError?.localizedDescription ?? "unknown error")", privacy: .public)"
+            )
+            return nil
+        }
+        return output.frameLength > 0 ? output : nil
+    }
+
     public func flush() {
         lock.lock()
         guard isPrepared else { lock.unlock(); return }
         let wasPlaying = inFlight > 0
         inFlight = 0
+        translationPlayer.stop()
+        originalPlayer.stop()
+        try? translationPlayer.playAudio()
+        if originalFormat != nil { try? originalPlayer.playAudio() }
         lock.unlock()
-        player.stop()
-        // A failure here only means the next chunk restarts the node; the
-        // flush itself has already done its job.
-        try? player.playAudio()
         if wasPlaying { onPlaybackChange?(false) }
     }
 
     public var isPlaying: Bool {
         lock.lock(); defer { lock.unlock() }
         return inFlight > 0
+    }
+
+    private static func clamped(_ volume: Float) -> Float {
+        min(max(volume, 0), 2)
     }
 }

@@ -30,6 +30,12 @@ extension SubtitleModel {
         private static let transcriptSizeKey = "transcriptSize"
         private static let timestampsKey = "showsTimestamps"
         private static let sourceTextKey = "showsSourceText"
+        private static let sourceApplicationKey = "audioSourceBundleID"
+        private static let remoteOutputKey = "remoteOutputDeviceUID"
+        private static let remoteOriginalVolumeKey = "remoteOriginalVolume"
+        private static let remoteTranslationVolumeKey = "remoteTranslationVolume"
+        private static let localOriginalVolumeKey = "localOriginalVolume"
+        private static let localTranslationVolumeKey = "localTranslationVolume"
 
         /// The pair a fresh install starts from: we speak Chinese, the far end
         /// English. Stated here rather than as literals at each use, so "what
@@ -94,6 +100,44 @@ extension SubtitleModel {
         static var inputDeviceUID: String {
             get { store.string(forKey: inputKey) ?? "" }
             set { store.set(newValue, forKey: inputKey) }
+        }
+
+        static var sourceBundleID: String {
+            get { store.string(forKey: sourceApplicationKey) ?? callAudioBundleID }
+            set { store.set(newValue, forKey: sourceApplicationKey) }
+        }
+
+        /// Empty means follow the system default output. Unlike the local
+        /// route, the remote route is always present while capturing because it
+        /// also replays the original after the process tap mutes the source app.
+        static var remoteOutputDeviceUID: String {
+            get { store.string(forKey: remoteOutputKey) ?? "" }
+            set { store.set(newValue, forKey: remoteOutputKey) }
+        }
+
+        static var remoteOriginalVolume: Double {
+            get { storedVolume(remoteOriginalVolumeKey) }
+            set { store.set(newValue, forKey: remoteOriginalVolumeKey) }
+        }
+
+        static var remoteTranslationVolume: Double {
+            get { storedVolume(remoteTranslationVolumeKey) }
+            set { store.set(newValue, forKey: remoteTranslationVolumeKey) }
+        }
+
+        static var localOriginalVolume: Double {
+            get { storedVolume(localOriginalVolumeKey) }
+            set { store.set(newValue, forKey: localOriginalVolumeKey) }
+        }
+
+        static var localTranslationVolume: Double {
+            get { storedVolume(localTranslationVolumeKey) }
+            set { store.set(newValue, forKey: localTranslationVolumeKey) }
+        }
+
+        private static func storedVolume(_ key: String) -> Double {
+            guard store.object(forKey: key) != nil else { return 1 }
+            return min(max(store.double(forKey: key), 0), 2)
         }
 
         static var clonesVoice: Bool {

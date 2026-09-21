@@ -313,6 +313,42 @@ final class SubtitleModel {
         didSet { Defaults.inputDeviceUID = inputDeviceUID }
     }
 
+    /// The app/process whose rendered audio is tapped. Stored by bundle id so
+    /// it survives both app and Core Audio process relaunches.
+    var sourceBundleID = Defaults.sourceBundleID {
+        didSet { Defaults.sourceBundleID = sourceBundleID }
+    }
+
+    /// Output used for the selected app's original and translated audio. Empty
+    /// follows the current system default output.
+    var remoteOutputDeviceUID = Defaults.remoteOutputDeviceUID {
+        didSet { Defaults.remoteOutputDeviceUID = remoteOutputDeviceUID }
+    }
+
+    var remoteOriginalVolume = Defaults.remoteOriginalVolume {
+        didSet { Defaults.remoteOriginalVolume = Self.clampedVolume(remoteOriginalVolume) }
+    }
+
+    var remoteTranslationVolume = Defaults.remoteTranslationVolume {
+        didSet {
+            Defaults.remoteTranslationVolume = Self.clampedVolume(remoteTranslationVolume)
+        }
+    }
+
+    var localOriginalVolume = Defaults.localOriginalVolume {
+        didSet { Defaults.localOriginalVolume = Self.clampedVolume(localOriginalVolume) }
+    }
+
+    var localTranslationVolume = Defaults.localTranslationVolume {
+        didSet {
+            Defaults.localTranslationVolume = Self.clampedVolume(localTranslationVolume)
+        }
+    }
+
+    private static func clampedVolume(_ value: Double) -> Double {
+        min(max(value, 0), 2)
+    }
+
     /// Whether the far end hears our translation in our own voice rather than
     /// the stock one. Only the uplink can use this: it is the only direction
     /// whose speaker is us, and the only one that synthesises speech.
@@ -507,6 +543,11 @@ final class SubtitleModel {
     /// synthesised, and it is not being captured.
     var speaksTranslation: Bool {
         translates && scope.captures(.local) && !outputDeviceUID.isEmpty
+            && localTranslationVolume > 0
+    }
+
+    var speaksRemoteTranslation: Bool {
+        translates && scope.captures(.remote) && remoteTranslationVolume > 0
     }
 
 
@@ -514,7 +555,8 @@ final class SubtitleModel {
     private var clients: [Direction: TranslationClient] = [:]
     @ObservationIgnored private var eventBatchers: [Direction: TranslationEventBatcher] = [:]
     @ObservationIgnored private var startupTask: Task<Void, Never>?
-    private let playbackPath = TranslationPlaybackPath()
+    private let remotePlaybackPath = TranslationPlaybackPath()
+    private let localPlaybackPath = TranslationPlaybackPath()
 
     /// One per direction, held outside the actor because the Core Audio IO
     /// thread feeds audio in without hopping to the main actor — that hop would
@@ -553,12 +595,14 @@ final class SubtitleModel {
         // pressing Start never stalls window input or the first animation.
         let inputUID = inputDeviceUID
         let outputUID = outputDeviceUID
+        let remoteOutputUID = remoteOutputDeviceUID
         startupTask = Task { [weak self] in
             let prepared = await Task.detached(priority: .userInitiated) {
                 (
                     CredentialStore.load(),
                     AudioInputDevice.named(uid: inputUID),
-                    AudioOutputDevice.named(uid: outputUID)
+                    AudioOutputDevice.named(uid: outputUID),
+                    AudioOutputDevice.named(uid: remoteOutputUID)
                 )
             }.value
             guard !Task.isCancelled, let self, self.isRunning else { return }
@@ -571,7 +615,8 @@ final class SubtitleModel {
             self.startPrepared(
                 credentials: prepared.0,
                 inputDevice: prepared.1,
-                outputDevice: prepared.2
+                localOutputDevice: prepared.2,
+                remoteOutputDevice: prepared.3
             )
         }
     }
@@ -579,7 +624,8 @@ final class SubtitleModel {
     private func startPrepared(
         credentials: CredentialStore.Credentials,
         inputDevice: AudioInputDevice?,
-        outputDevice: AudioOutputDevice?
+        localOutputDevice: AudioOutputDevice?,
+        remoteOutputDevice: AudioOutputDevice?
     ) {
         guard isRunning else { return }
         entries.removeAll()
@@ -595,13 +641,29 @@ final class SubtitleModel {
         // Transcribing, nothing is rendered into anything — the target is
         // dropped and the same socket returns only the transcript, still with
         // its source language pinned so ASR knows what it is hearing.
+        let remoteRouteReady = scope.captures(.remote) && startPlayer(
+            direction: .remote,
+            device: remoteOutputDevice,
+            originalVolume: remoteOriginalVolume,
+            translationVolume: remoteTranslationVolume
+        )
+        let localRouteReady = scope.captures(.local) && !outputDeviceUID.isEmpty
+            && localOutputDevice != nil
+            && startPlayer(
+                direction: .local,
+                device: localOutputDevice,
+                originalVolume: localOriginalVolume,
+                translationVolume: localTranslationVolume
+            )
+
         if scope.captures(.remote) {
             let downlink = makeClient(
                 direction: .remote,
                 credentials: credentials,
                 targetLanguage: translates ? myLanguage : nil,
                 sourceLanguage: theirLanguage,
-                wantsAudio: false
+                wantsAudio: translates && remoteRouteReady
+                    && remoteTranslationVolume > 0
             )
             clients[.remote] = downlink
             downlinkPath.install(client: downlink)
@@ -613,7 +675,7 @@ final class SubtitleModel {
         // never while transcribing — there is no translation to speak — and
         // never when our own side is not captured in the first place.
         if scope.captures(.local) {
-            let wantsAudio = speaksTranslation && startPlayer(device: outputDevice)
+            let wantsAudio = speaksTranslation && localRouteReady
             let uplink = makeClient(
                 direction: .local,
                 credentials: credentials,
@@ -630,10 +692,11 @@ final class SubtitleModel {
             uplink.connect()
         }
 
-        let session = CallAudioSession()
+        let session = CallAudioSession(sourceBundleID: sourceBundleID)
         session.capturesUplink = scope.captures(.local)
         session.capturesDownlink = scope.captures(.remote)
         session.uplinkDevice = inputDevice
+        session.mutesDownlinkSource = remoteRouteReady
         session.onDownlink = { [weak self] buffer in
             self?.forward(tapBuffer: buffer)
         }
@@ -655,20 +718,31 @@ final class SubtitleModel {
     /// failing the whole session if the device cannot be opened — a missing
     /// BlackHole should not cost the user their subtitles.
     @discardableResult
-    private func startPlayer(device: AudioOutputDevice?) -> Bool {
+    private func startPlayer(
+        direction: Direction,
+        device: AudioOutputDevice?,
+        originalVolume: Double,
+        translationVolume: Double
+    ) -> Bool {
         let player = TranslationPlayer()
-        player.onPlaybackChange = { [weak self] speaking in
-            Task { @MainActor [weak self] in self?.isSpeaking = speaking }
+        if direction == .local {
+            player.onPlaybackChange = { [weak self] speaking in
+                Task { @MainActor [weak self] in self?.isSpeaking = speaking }
+            }
         }
         do {
-            try player.start(device: device)
-            playbackPath.install(player)
+            try player.start(
+                device: device,
+                originalVolume: Float(originalVolume),
+                translationVolume: Float(translationVolume)
+            )
+            playbackPath(for: direction).install(player)
             return true
         } catch {
             BridgeLog.audio.error(
                 "translation playback unavailable: \("\(error)", privacy: .public)"
             )
-            playbackPath.install(nil)
+            playbackPath(for: direction).install(nil)
             return false
         }
     }
@@ -685,7 +759,8 @@ final class SubtitleModel {
         eventBatchers.removeAll()
         downlinkPath.install(client: nil)
         uplinkPath.install(client: nil)
-        playbackPath.stop()
+        remotePlaybackPath.stop()
+        localPlaybackPath.stop()
         isSpeaking = false
         status = .idle
         callState = .idle
@@ -751,11 +826,13 @@ final class SubtitleModel {
     @available(macOS 14.2, *)
     private nonisolated func forward(tapBuffer: DownlinkTap.Buffer) {
         downlinkPath.enqueue(tapBuffer)
+        remotePlaybackPath.enqueueOriginal(tapBuffer)
     }
 
     /// Likewise on the microphone's IO thread.
     private nonisolated func forward(micBuffer: AVAudioPCMBuffer) {
         uplinkPath.enqueue(micBuffer)
+        localPlaybackPath.enqueueOriginal(micBuffer)
     }
 
     private func apply(callState state: CallState) {
@@ -809,12 +886,18 @@ final class SubtitleModel {
                 guard let self else { return }
                 for event in events { self.handle(event, from: direction) }
             }
-        } deliverAudio: { [playbackPath] data in
-            if direction == .local { playbackPath.enqueue(data) }
+        } deliverAudio: { [weak self] data in
+            self?.playbackPath(for: direction).enqueue(data)
         }
         eventBatchers[direction] = batcher
         client.onEvent = { [weak batcher] event in batcher?.submit(event) }
         return client
+    }
+
+    private nonisolated func playbackPath(
+        for direction: Direction
+    ) -> TranslationPlaybackPath {
+        direction == .remote ? remotePlaybackPath : localPlaybackPath
     }
 
     private func handle(_ event: TranslationClient.Event, from direction: Direction) {
@@ -854,9 +937,9 @@ final class SubtitleModel {
             noteLiveTextChanged()
             seal(direction)
         case .audio(let pcm):
-            // Only our own side is ever synthesised; the far end's translation
-            // is read, not spoken, or we would talk over the call.
-            if direction == .local { playbackPath.enqueue(pcm) }
+            // Normally intercepted by `TranslationEventBatcher` before the
+            // main actor. Keep this fallback symmetric for direct test feeds.
+            playbackPath(for: direction).enqueue(pcm)
         case .failed(let message):
             status = .failed(message)
         case .finished:

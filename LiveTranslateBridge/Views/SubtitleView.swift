@@ -49,6 +49,7 @@ struct SubtitleView: View {
                         .lineLimit(1)
                 }
 
+                AudioRoutingButton(model: model)
                 transport
             }
 
@@ -225,6 +226,25 @@ struct SubtitleView: View {
                             >= geometry.contentSize.height - 24
                 }
             }
+        }
+    }
+}
+
+private struct AudioRoutingButton: View {
+    @Bindable var model: SubtitleModel
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented.toggle()
+        } label: {
+            Label(t("settings.tab.voice"), systemImage: "speaker.wave.2")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .popover(isPresented: $isPresented, arrowEdge: .top) {
+            AudioRoutingSettings(model: model)
+                .frame(width: 520, height: 620)
         }
     }
 }

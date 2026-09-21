@@ -2,10 +2,8 @@ import os
 import CoreAudio
 import Foundation
 
-/// The daemon that carries Continuity call audio. Verified empirically: during a
-/// relayed iPhone call this process holds both input and output IO, while
-/// `callservicesd` (call signalling) stays silent and FaceTime.app is not
-/// involved at all.
+/// The default source retained for existing installs. Users can replace it
+/// with any process registered with Core Audio.
 nonisolated public let callAudioBundleID = "com.apple.avconferenced"
 
 nonisolated public struct CallAudioProcess: Sendable, Equatable {
@@ -36,6 +34,7 @@ nonisolated public enum CallState: Sendable, Equatable {
 /// backstop because the IO-state notification is not guaranteed for every
 /// transition.
 nonisolated public final class CallMonitor: @unchecked Sendable {
+    public let targetBundleID: String
     private let queue = DispatchQueue(label: "call-audio-bridge.monitor")
     private var listenerBlock: AudioObjectPropertyListenerBlock?
     private var watchedProcess: AudioObjectID?
@@ -46,7 +45,9 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
     /// Called on an internal queue whenever the call state changes.
     public var onChange: (@Sendable (CallState) -> Void)?
 
-    public init() {}
+    public init(targetBundleID: String = callAudioBundleID) {
+        self.targetBundleID = targetBundleID
+    }
 
     public func start() {
         queue.async { [weak self] in
@@ -132,7 +133,7 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
     // MARK: - state
 
     private func reevaluate() {
-        let found = Self.findCallAudioProcess()
+        let found = Self.findAudioProcess(bundleID: targetBundleID)
 
         if let found, found.objectID != watchedProcess {
             installIOListener(for: found.objectID)
@@ -163,23 +164,33 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
     /// Resolved by bundle id, never by a cached pid: the daemon is restarted by
     /// launchd and its pid changes.
     public static func findCallAudioProcess() -> CallAudioProcess? {
+        findAudioProcess(bundleID: callAudioBundleID)
+    }
+
+    /// Prefer an actively-rendering object when an app has several audio
+    /// process objects, but retain an idle one so listeners are attached before
+    /// playback starts.
+    public static func findAudioProcess(bundleID: String) -> CallAudioProcess? {
         let ids = AudioObject.objectList(
             AudioObjectID(kAudioObjectSystemObject),
             kAudioHardwarePropertyProcessObjectList
         )
+        var fallback: CallAudioProcess?
         for id in ids {
-            guard AudioObject.string(id, kAudioProcessPropertyBundleID) == callAudioBundleID
+            guard AudioObject.string(id, kAudioProcessPropertyBundleID) == bundleID
             else { continue }
-            return CallAudioProcess(
+            let process = CallAudioProcess(
                 objectID: id,
                 pid: AudioObject.value(id, kAudioProcessPropertyPID, default: pid_t(-1)),
-                bundleID: callAudioBundleID,
+                bundleID: bundleID,
                 isRunningInput: AudioObject.value(
                     id, kAudioProcessPropertyIsRunningInput, default: UInt32(0)) == 1,
                 isRunningOutput: AudioObject.value(
                     id, kAudioProcessPropertyIsRunningOutput, default: UInt32(0)) == 1
             )
+            if process.isRunningOutput { return process }
+            if fallback == nil { fallback = process }
         }
-        return nil
+        return fallback
     }
 }

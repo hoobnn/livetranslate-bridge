@@ -1,6 +1,6 @@
 # LiveTranslateBridge
 
-macOS app：捕获「接力通话」（Continuity / Phone Call Relay）的音频，接 Qwen 实时翻译，输出双语字幕。
+macOS app：选择任意已注册到 Core Audio 的应用声音或系统输入，接 Qwen 实时转录 / 翻译，并把原声与模型译声按独立音量路由到指定输出设备。
 
 前身是 `call-audio-bridge` 的命令行原型，本仓库把它迁成带界面的 App，CLI 的各项命令改为 App 内的诊断面板。
 
@@ -24,17 +24,17 @@ macOS 14.2+（Core Audio 进程 tap 的下限）。工程当前的 deployment ta
 
 用 Xcode 打开 `LiveTranslateBridge.xcodeproj` 运行。
 
-首次运行先进「设置」（⌘,）填 API Key 与业务空间 ID，存入登录钥匙串。之后只剩一件事：在字幕页顶部选「我说」和「对方说」两种语言，点「开始」，接听 iPhone 来电。
+首次运行先进「设置」（⌘,）填 API Key 与业务空间 ID，存入登录钥匙串。然后在「音频路由」中选择声音来源、系统输入和两侧输出；回到字幕页选两种语言并点「开始」。默认声音源仍是接力通话的 `avconferenced`，也可换成会议、浏览器、播放器等当前出现在 Core Audio 进程列表中的应用。
 
 顶部还有「采集」三选一，默认双向：
 
 | 采集 | 开什么 | 要不要通话 |
 |---|---|---|
-| 双向 | 进程 tap + 麦克风 | 要 |
-| 只听对方 | 仅进程 tap | 要 |
+| 双向 | 所选应用的进程 tap + 麦克风 | 要等待所选应用播放 |
+| 只听对方 | 仅所选应用的进程 tap | 要等待所选应用播放 |
 | 只听我 | 仅麦克风 | **不要** |
 
-只听对方不会打开麦克风，也就不弹麦克风权限；只听我不开进程 tap，因此**不依赖通话**——点「开始」就直接采集，线下会议、口述笔记、当场口译都能用。单边时只建一条 WebSocket，另一条不开。
+只听对方不会打开麦克风，也就不弹麦克风权限；只听我不开进程 tap，因此**不依赖所选应用**——点「开始」就直接采集，线下会议、口述笔记、当场口译都能用。单边时只建一条 WebSocket，另一条不开。
 
 另外还有「翻译 / 转录」两种模式，默认翻译。转录只把两边说的话按原话记成文字，不译、也不播报，适合只想留个通话记录的场合——**这时两边可以选同一种语言**，同语种通话记录是转录的常见用法，翻译模式下则仍然禁止（把一种语言译成它自己没有意义）。两个语言选择器在转录模式下依然有用：它们把各自方向的 ASR 钉在已知语种上，识别比自动检测更准，切回翻译时也原样还在。
 
@@ -51,28 +51,25 @@ macOS 14.2+（Core Audio 进程 tap 的下限）。工程当前的 deployment ta
 
 调试时也可以用 scheme 的环境变量 `DASHSCOPE_API_KEY` / `DASHSCOPE_WORKSPACE_ID` 覆盖钥匙串里的值。
 
-## 让对方听到译文
+## 音频路由与双向播报
 
-上面那套默认只出字幕。要让对方听到你的译文，去「设置 → 语音」选一个输出设备——**选设备本身就是开启播报，不另设开关**，选「不播报」就只有字幕。
+「设置 → 音频路由」把两侧分成两条互不耦合的路径：
 
-**但播到普通扬声器只有你自己听得到。**
+- **我听到的声音**：所选应用的原声 + 该声音的模型译声，默认跟随系统输出，也可以指定耳机、扬声器或其他输出设备。
+- **对方听到的声音**：物理麦克风原声 + 我说话后的模型译声，输出到指定设备；选「不播报」时不接管原有麦克风链路。
 
-接力通话的上行是 `avconferenced` 从**系统默认输入设备**读的，App 无法直接写入。要让对方真的听到译文，需要一个回环设备中转：
+两条路径都能分别调节原声和模型译声，范围为 0–200%。转录模式不生成模型语音，但原声路由仍可工作。所选应用的输出在 tap 被读取期间会用 `CATapMutedWhenTapped` 暂时静音，再由应用回放到指定输出，因此原声不会重叠，并且音量控制真正作用在声音链路上。
 
-1. 装一个回环声卡，例如 [BlackHole](https://existential.audio/blackhole/)（`brew install blackhole-2ch`）
-2. 「系统设置 → 声音 → 输入」选中它——**输出仍保持你的耳机 / 扬声器，不要也选回环设备**，否则你自己什么都听不到
-3. 回到本 App 的「设置 → 语音 → 播放到」，选同一个设备
-4. 同一页的「从这里采集我的声音」，明确选中你的**真实麦克风**
+要让会议或通话应用听到「我的原声 + 译声」混音，仍需要回环设备：
 
-第 4 步不能省。系统默认输入此时已经是回环设备，而采集若跟随默认输入，读到的就是 App 自己播出去的译文——译文被重新采集、再翻译一次，你的原声则始终没人听。选中真实麦克风后，回环设备留给通话，麦克风留给采集，两者互不干扰。漏掉这一步时设置页会直接给出橙色警告。
+1. 安装 [BlackHole](https://existential.audio/blackhole/) 等回环声卡；
+2. 在本 App 的「对方听到的声音」中把输出选为该回环设备；
+3. 在会议 / 通话应用中把输入选为同一个回环设备；
+4. 在本 App 的「系统输入」中明确选择真实麦克风，避免重新采到自己的译声。
 
-两个选择器各有标记：「播放到」里的「可回灌通话」是推荐项，「从这里采集」里的「回环设备，会采到译文」则是**要避开**的项。该页还会显示当前的系统默认输入，用来确认第 2 步是否生效。
+输出选择器会标记可回灌的设备，输入选择器会警告可能形成反馈的回环设备。音色克隆只作用于「我这一侧」的译声；所选应用一侧使用模型默认音色。
 
-同一页还有「用我自己的声音播报」：通话开始时克隆一次你的音色并沿用，关闭则用默认音色。
-
-代价是上行从此只有译文：合成语音比说话本身晚 1–3 秒，对方听到的是延迟版本而不是你的原声。
-
-App 不会也无法替你修改系统默认输入设备，更不会安装回环驱动——HAL 插件装在 `/Library/Audio/Plug-Ins/HAL`，需要管理员权限和独立签名。
+App 直接绑定用户选择的 Core Audio 输入和输出，但不会修改 macOS 的全局默认设备，也不会安装 HAL 驱动。
 
 ## 结构
 
@@ -82,13 +79,14 @@ LiveTranslateBridge/
   ContentView              字幕 / 诊断两个标签页
   CallAudioKit/            采集层，与 UI 无关
     AudioObjectProperty    AudioObject 属性读取的类型化封装
-    CallMonitor            监听 avconferenced 的 IO 状态，判定通话起止
-    DownlinkTap            进程 tap + 聚合设备，采集远端；含残留清理
+    AudioSourceApplication 枚举可选的 Core Audio 应用声音源
+    CallMonitor            按 bundle ID 监听所选应用的 IO 状态
+    DownlinkTap            进程 tap + 聚合设备，采集应用输出；含静音接管与残留清理
     UplinkCapture          AVAudioEngine 采集本机麦克风
     CallAudioSession       把监听与两路采集串起来；两路各可单独关闭，只留麦克风时不等通话
     Resampler              48k 立体声 → 16k 单声道 Int16
     AudioOutputDevice      枚举输出设备，识别可回灌通话的回环设备
-    TranslationPlayer      把服务端合成的 24k 语音播到指定输出设备
+    TranslationPlayer      原声 / 24k 模型译声双声道混音、独立增益和输出设备绑定
   Translation/             与翻译服务对接
     TranslationClient      qwen3.8-livetranslate-flash-realtime 的 WebSocket 客户端
     CredentialStore        凭据读写（钥匙串，环境变量优先）
@@ -97,7 +95,8 @@ LiveTranslateBridge/
     DiagnosticsModel       进程检查、电平表、离线文件翻译
   Views/                   纯视图
     SubtitleView           字幕板
-    SettingsView           凭据、服务区域与语音输出
+    SettingsView           凭据、服务区域与音频路由
+    AudioRoutingSettings   应用声音源、输入 / 输出端与双向音量
     DiagnosticsView        诊断面板（原 CLI 的 status / levels / clean / translate-file）
 ```
 
@@ -109,8 +108,8 @@ LiveTranslateBridge/
 
 | 面板 | 原命令 | 作用 |
 |---|---|---|
-| 通话进程 | `status` | 当前是否有通话、在哪个进程上 |
-| 电平表 | `levels` | 双向电平，会请求麦克风权限 |
+| 声音源进程 | `status` | 所选应用是否注册、是否正在输出 |
+| 电平表 | `levels` | 所选应用与所选系统输入的双向电平，会请求麦克风权限 |
 | 离线翻译 | `translate-file` | 用 `samples/*.wav` 回归翻译链路 |
 | 维护 | `clean` | 清理异常退出遗留的聚合设备 |
 
@@ -118,7 +117,7 @@ LiveTranslateBridge/
 
 工程已关闭 App Sandbox。`AudioHardwareCreateProcessTap` 与聚合设备在沙盒下会被拒绝，这是采集链路的硬前提。代价是不能上架 Mac App Store。
 
-系统音频与麦克风用途说明分别写在 build settings 的 `INFOPLIST_KEY_NSAudioCaptureUsageDescription`、`INFOPLIST_KEY_NSMicrophoneUsageDescription`，Hardened Runtime 所需的 `com.apple.security.device.audio-input` 写在 App entitlement 中。字幕首次创建 process tap 时，macOS 会请求系统音频录制权限；只有诊断面板的电平表会打开麦克风。
+系统音频与麦克风用途说明写在显式 `Info.plist` 的 `NSAudioCaptureUsageDescription`、`NSMicrophoneUsageDescription` 中，Hardened Runtime 所需的 `com.apple.security.device.audio-input` 写在 App entitlement 中。字幕首次创建 process tap 时，macOS 会请求系统音频录制权限；采集范围包含自己或诊断电平表启用时会打开麦克风。
 
 ## 关于录音
 
@@ -134,4 +133,4 @@ App 刻意不提供录制到磁盘的功能。通话内容属于双方，多数�
 
 **译文回灌依赖外部回环设备**：App 只能把合成语音播到某个输出设备，无法直接写入接力通话的上行——那一路由 `avconferenced` 从系统默认输入读取。因此要让对方听到译文，必须由用户自行安装回环声卡并设为默认输入（见「让对方听到译文」一节）。自带回灌需要一个 HAL 插件，属于独立的驱动工程。
 
-**译文延迟**：合成语音比说话本身晚 1–3 秒。上行被译文占用时，对方听到的是延迟版本而非原声，两者无法并存。
+**译文延迟**：合成语音比说话本身晚 1–3 秒。现在可以同时混合原声和译声，但二者天然不同步；需要避免重叠时，把对应方向的原声音量调为 0。

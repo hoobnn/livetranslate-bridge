@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// Coalesces socket text deltas into one main-actor delivery per display
@@ -75,6 +76,21 @@ nonisolated final class TranslationPlaybackPath: @unchecked Sendable {
         let player = self.player
         lock.unlock()
         player?.enqueue(data)
+    }
+
+    @available(macOS 14.2, *)
+    func enqueueOriginal(_ buffer: DownlinkTap.Buffer) {
+        lock.lock()
+        let player = self.player
+        lock.unlock()
+        player?.enqueueOriginal(buffer)
+    }
+
+    func enqueueOriginal(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
+        let player = self.player
+        lock.unlock()
+        player?.enqueueOriginal(buffer)
     }
 
     func stop() { install(nil) }

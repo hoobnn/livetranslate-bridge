@@ -782,6 +782,46 @@ struct OtherPreferencePersistenceTests {
         SubtitleModel.withTemporaryDefaults(body)
     }
 
+    @Test func theAudioSourceDefaultsToContinuityAndPersistsAReplacement() {
+        withRestoredDefaults {
+            let first = SubtitleModel()
+            #expect(first.sourceBundleID == callAudioBundleID)
+
+            first.sourceBundleID = "com.example.conference"
+            #expect(SubtitleModel().sourceBundleID == "com.example.conference")
+        }
+    }
+
+    @Test func routeDevicesAndVolumesSurviveANewModel() {
+        withRestoredDefaults {
+            let first = SubtitleModel()
+            first.remoteOutputDeviceUID = "SpeakerUID"
+            first.remoteOriginalVolume = 0.35
+            first.remoteTranslationVolume = 1.25
+            first.localOriginalVolume = 0.7
+            first.localTranslationVolume = 1.5
+
+            let second = SubtitleModel()
+            #expect(second.remoteOutputDeviceUID == "SpeakerUID")
+            #expect(second.remoteOriginalVolume == 0.35)
+            #expect(second.remoteTranslationVolume == 1.25)
+            #expect(second.localOriginalVolume == 0.7)
+            #expect(second.localTranslationVolume == 1.5)
+        }
+    }
+
+    @Test func zeroTranslationGainDisablesModelAudioPerDirection() {
+        withRestoredDefaults {
+            let model = SubtitleModel()
+            model.outputDeviceUID = "LoopbackUID"
+            model.remoteTranslationVolume = 0
+            model.localTranslationVolume = 0
+
+            #expect(!model.speaksRemoteTranslation)
+            #expect(!model.speaksTranslation)
+        }
+    }
+
     @Test func theOutputDeviceSurvivesANewModel() {
         withRestoredDefaults {
             let first = SubtitleModel()

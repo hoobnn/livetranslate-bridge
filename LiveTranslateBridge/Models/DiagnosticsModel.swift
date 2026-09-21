@@ -19,7 +19,7 @@ final class DiagnosticsModel {
     enum ProcessReport: Equatable, Sendable {
         case notChecked
         case noCall
-        case found(pid: Int64, input: Bool, output: Bool, active: Bool)
+        case found(bundleID: String, pid: Int64, input: Bool, output: Bool, active: Bool)
     }
 
     /// One line of a `translate-file` run. The source and translation are
@@ -118,12 +118,13 @@ final class DiagnosticsModel {
 
     // MARK: - status
 
-    func refreshProcessReport() {
-        guard let process = CallMonitor.findCallAudioProcess() else {
+    func refreshProcessReport(sourceBundleID: String = callAudioBundleID) {
+        guard let process = CallMonitor.findAudioProcess(bundleID: sourceBundleID) else {
             processReport = .noCall
             return
         }
         processReport = .found(
+            bundleID: sourceBundleID,
             pid: Int64(process.pid),
             input: process.isRunningInput,
             output: process.isRunningOutput,
@@ -135,7 +136,10 @@ final class DiagnosticsModel {
 
     /// Opens the microphone as well, so this is the one panel action that
     /// triggers the microphone permission prompt.
-    func startMetering() {
+    func startMetering(
+        sourceBundleID: String = callAudioBundleID,
+        inputDevice: AudioInputDevice? = nil
+    ) {
         guard !isMetering, #available(macOS 14.2, *) else { return }
         isMetering = true
 
@@ -149,9 +153,9 @@ final class DiagnosticsModel {
         // The microphone meter is useful without a call, so it must not be
         // coupled to CallMonitor. The downlink tap still follows the call
         // daemon because there is no output process to tap while it is idle.
-        startUplinkMeter()
+        startUplinkMeter(device: inputDevice)
 
-        let monitor = CallMonitor()
+        let monitor = CallMonitor(targetBundleID: sourceBundleID)
         monitor.onChange = { [weak self] state in
             Task { @MainActor [weak self] in self?.applyMeteringCallState(state) }
         }
@@ -174,10 +178,10 @@ final class DiagnosticsModel {
         uplinkPeak = 0
     }
 
-    private func startUplinkMeter() {
+    private func startUplinkMeter(device: AudioInputDevice?) {
         switch AudioCapturePermission.current {
         case .granted:
-            openUplinkMeter()
+            openUplinkMeter(device: device)
         case .undetermined:
             AudioCapturePermission.request { [weak self] granted in
                 BridgeLog.tap.notice(
@@ -186,7 +190,7 @@ final class DiagnosticsModel {
                 guard granted else { return }
                 Task { @MainActor [weak self] in
                     guard let self, self.isMetering else { return }
-                    self.openUplinkMeter()
+                    self.openUplinkMeter(device: device)
                 }
             }
         case .denied:
@@ -196,7 +200,7 @@ final class DiagnosticsModel {
         }
     }
 
-    private func openUplinkMeter() {
+    private func openUplinkMeter(device: AudioInputDevice?) {
         guard uplinkCapture == nil else { return }
         let capture = UplinkCapture()
         capture.onBuffer = { [meter] buffer in
@@ -206,7 +210,7 @@ final class DiagnosticsModel {
             meter.record(uplink: peak)
         }
         do {
-            try capture.start()
+            try capture.start(device: device)
             uplinkCapture = capture
             BridgeLog.audio.notice("microphone meter running")
         } catch {

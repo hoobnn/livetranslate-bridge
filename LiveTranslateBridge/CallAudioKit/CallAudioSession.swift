@@ -12,7 +12,7 @@ nonisolated public final class CallAudioSession: @unchecked Sendable {
         case uplink     // our microphone
     }
 
-    private let monitor = CallMonitor()
+    private let monitor: CallMonitor
     private let downlink = DownlinkTap()
     private let uplink = UplinkCapture()
     private let lock = NSLock()
@@ -34,12 +34,18 @@ nonisolated public final class CallAudioSession: @unchecked Sendable {
     /// `UplinkCapture`.
     public var uplinkDevice: AudioInputDevice?
 
+    /// Mutes the selected app's direct hardware route while the tap is read.
+    /// The caller must replay the captured original through its output mixer.
+    public var mutesDownlinkSource = false
+
     public var onStateChange: (@Sendable (CallState) -> Void)?
     public var onDownlink: (@Sendable (DownlinkTap.Buffer) -> Void)?
     public var onUplink: (@Sendable (AVAudioPCMBuffer) -> Void)?
     public var onError: (@Sendable (Error) -> Void)?
 
-    public init() {}
+    public init(sourceBundleID: String = callAudioBundleID) {
+        monitor = CallMonitor(targetBundleID: sourceBundleID)
+    }
 
     public func start() {
         monitor.onChange = { [weak self] state in
@@ -110,7 +116,10 @@ nonisolated public final class CallAudioSession: @unchecked Sendable {
         if capturesDownlink {
             downlink.onBuffer = { [weak self] buffer in self?.onDownlink?(buffer) }
             do {
-                try downlink.start(processObjectID: processObjectID)
+                try downlink.start(
+                    processObjectID: processObjectID,
+                    muteSource: mutesDownlinkSource
+                )
             } catch {
                 // Also logged, not just reported: `onError` only reaches the
                 // status line, and a tap that never opened is exactly what the
