@@ -2097,13 +2097,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Speak in my own voice"
+            "value" : "Use each speaker's voice"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "用我自己的声音播报"
+            "value" : "用原说话人的音色播报"
           }
         }
       }
@@ -2114,13 +2114,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "On clones your voice once; off uses the default voice."
+            "value" : "Applies to both directions with audio output. Your voice is cloned once; the selected app's voice is updated for each reply. Uses the qwen3.5 model when enabled."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开启时克隆一次音色；关闭时使用默认音色。"
+            "value" : "对有译声输出的方向生效：我的音色复刻一次，所选应用每次回复时更新音色。开启后使用 qwen3.5 模型。"
           }
         }
       }

@@ -9,6 +9,39 @@ import Foundation
 import Testing
 @testable import LiveTranslateBridge
 
+struct TranslationVoiceConfigTests {
+    private func config(
+        wantsAudio: Bool,
+        voice: TranslationClient.Config.Voice
+    ) -> TranslationClient.Config {
+        .init(apiKey: "test", workspaceID: "test", targetLanguage: "zh",
+              sourceLanguage: "en", wantsAudio: wantsAudio, voice: voice)
+    }
+
+    @Test func selectedAppCloneUsesTheLegacyModelAndPerReplyVoice() {
+        let selected = config(wantsAudio: true, voice: .cloneEachReply)
+        let session = selected.sessionUpdate
+        #expect(selected.modelID == TranslationClient.voiceCloneModel)
+        #expect(session["modalities"] as? [String] == ["text", "audio"])
+        #expect(session["output_modalities"] == nil)
+        #expect(session["enable_voice_clone"] as? Bool == true)
+        #expect(session["voice"] as? String == "default")
+        #expect((session["voice_clone_options"] as? [String: String])?["frequency"]
+                == "always")
+    }
+
+    @Test func localCloneRunsOnceAndTextOnlyKeepsTheCurrentModel() {
+        let local = config(wantsAudio: true, voice: .cloneOnce)
+        #expect((local.sessionUpdate["voice_clone_options"] as? [String: String])?["frequency"]
+                == "once")
+
+        let textOnly = config(wantsAudio: false, voice: .cloneOnce)
+        #expect(textOnly.modelID == TranslationClient.model)
+        #expect(textOnly.sessionUpdate["enable_voice_clone"] == nil)
+        #expect(textOnly.sessionUpdate["output_modalities"] as? [String] == ["text"])
+    }
+}
+
 /// q3.8 streams both the transcript and the translation as true deltas
 /// (`.transcriptDelta` / `.translationDelta`); the snapshot events
 /// `.transcript` / `.translation` belong to the older models and replace

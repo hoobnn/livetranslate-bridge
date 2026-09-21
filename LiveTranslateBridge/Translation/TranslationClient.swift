@@ -4,7 +4,8 @@ import Foundation
 /// Streams 16 kHz PCM to Alibaba Model Studio's live translation model and
 /// reports transcript and translation as they arrive.
 ///
-/// Protocol: `qwen3.8-livetranslate-flash-realtime` over WebSocket.
+/// Protocol: qwen3.8 by default, qwen3.5 when voice cloning is requested,
+/// over the same WebSocket endpoint with model-specific session fields.
 /// https://help.aliyun.com/zh/model-studio/qwen3-8-livetranslate-flash-realtime
 ///
 /// One client handles one direction. A call needs two: the far end translated
@@ -36,9 +37,8 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         /// The service can speak the translation in the speaker's own voice
         /// rather than a stock one.
         ///
-        /// Documented for q3.5; q3.8's section of the reference does not
-        /// mention it either way, so a server that rejects the fields is a
-        /// possibility the caller should be ready for.
+        /// Available through q3.5's session schema. q3.8 uses a different
+        /// schema and does not document live voice cloning.
         public enum Voice: Sendable, Equatable {
             /// The stock voice, `Tina`. No clone fields are sent at all.
             case preset
@@ -99,19 +99,69 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             self.voice = voice
         }
 
+        var modelID: String {
+            wantsAudio && voice.frequency != nil
+                ? TranslationClient.voiceCloneModel : TranslationClient.model
+        }
+
+        var sessionUpdate: [String: Any] {
+            var translation: [String: Any]?
+            if let targetLanguage {
+                translation = ["language": targetLanguage]
+                if !phrases.isEmpty {
+                    translation?["corpus"] = ["phrases": phrases]
+                }
+            }
+
+            if modelID == TranslationClient.voiceCloneModel {
+                var session: [String: Any] = [
+                    "modalities": ["text", "audio"],
+                    "sample_rate": 16_000,
+                    "input_audio_format": "pcm",
+                    "output_audio_format": "pcm",
+                    "input_audio_transcription": [
+                        "model": "qwen3-asr-flash-realtime",
+                    ],
+                ]
+                if let translation { session["translation"] = translation }
+                if let sourceLanguage {
+                    session["input_audio_transcription"] = [
+                        "model": "qwen3-asr-flash-realtime",
+                        "language": sourceLanguage,
+                    ]
+                }
+                if let frequency = voice.frequency, let name = voice.name {
+                    session["voice"] = name
+                    session["enable_voice_clone"] = true
+                    session["voice_clone_options"] = ["frequency": frequency]
+                }
+                return session
+            }
+
+            var session: [String: Any] = [
+                "output_modalities": wantsAudio ? ["text", "audio"] : ["text"],
+            ]
+            if let translation { session["translation"] = translation }
+            if let sourceLanguage {
+                session["input_audio_transcription"] = ["language": sourceLanguage]
+            }
+            return session
+        }
+
         var url: URL {
             var components = URLComponents()
             components.scheme = "wss"
             components.host = "\(workspaceID).\(region.rawValue).maas.aliyuncs.com"
             components.path = "/api-ws/v1/realtime"
             components.queryItems = [
-                URLQueryItem(name: "model", value: TranslationClient.model)
+                URLQueryItem(name: "model", value: modelID)
             ]
             return components.url!
         }
     }
 
     public static let model = "qwen3.8-livetranslate-flash-realtime"
+    public static let voiceCloneModel = "qwen3.5-livetranslate-flash-realtime"
 
     public enum Event: Sendable {
         /// Cumulative source-language transcript; replaces what came before.
@@ -569,52 +619,12 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     // MARK: - sending
 
     private func sendSessionUpdate() {
-        // q3.8 takes `output_modalities`, not q3.5's `modalities`, and drops
-        // that model's `input_audio_format` / `output_audio_format` /
-        // `sample_rate` / `turn_detection` knobs: the formats are fixed (16 kHz
-        // PCM in, 24 kHz PCM out) and sentence breaks come from the server's
-        // own `speaker_detection`, which has no client-side configuration.
-        var sessionConfig: [String: Any] = [
-            "output_modalities": config.wantsAudio ? ["text", "audio"] : ["text"],
-        ]
-        // Absent when transcribing: see `translationConfig()`.
-        if let translation = translationConfig() {
-            sessionConfig["translation"] = translation
-        }
-        // Voice cloning shapes the synthesised speech, so it is only worth
-        // asking for when that speech is being produced at all. Sending it
-        // alongside a text-only session would be a request the server has
-        // nothing to apply.
-        if config.wantsAudio,
-           let frequency = config.voice.frequency,
-           let name = config.voice.name {
-            sessionConfig["voice"] = name
-            sessionConfig["enable_voice_clone"] = true
-            sessionConfig["voice_clone_options"] = ["frequency": frequency]
-        }
-        // ASR is always on and billed at no charge here, so unlike q3.5 there
-        // is nothing to switch on — only the source language to pin when the
-        // caller does not want auto-detection.
-        if let source = config.sourceLanguage {
-            sessionConfig["input_audio_transcription"] = ["language": source]
-        }
+        let sessionConfig = config.sessionUpdate
         let keys = sessionConfig.keys.sorted().joined(separator: ",")
-        BridgeLog.socket.notice("session.update sending keys: \(keys, privacy: .public)")
+        BridgeLog.socket.notice(
+            "session.update \(config.modelID, privacy: .public) sending keys: \(keys, privacy: .public)"
+        )
         send(["type": "session.update", "session": sessionConfig])
-    }
-
-    /// The `translation` block, or nil when no translation was asked for.
-    ///
-    /// A transcription-only session omits the key rather than sending a null
-    /// or empty language: the field is what turns translation on, so leaving
-    /// it out is how it is turned off.
-    private func translationConfig() -> [String: Any]? {
-        guard let target = config.targetLanguage else { return nil }
-        var translation: [String: Any] = ["language": target]
-        if !config.phrases.isEmpty {
-            translation["corpus"] = ["phrases": config.phrases]
-        }
-        return translation
     }
 
     /// Queues audio until the session is configured; the service rejects
@@ -848,6 +858,13 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             )
 
         case "session.updated":
+            if config.voice.frequency != nil {
+                let session = event["session"] as? [String: Any]
+                let accepted = session?["enable_voice_clone"] as? Bool == true
+                BridgeLog.socket.notice(
+                    "voice clone \(accepted ? "confirmed" : "not confirmed", privacy: .public) by session.updated"
+                )
+            }
             lock.lock()
             isOpen = true
             sawSessionUpdated = true
@@ -902,7 +919,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             let value = delta()
             if !value.isEmpty { onEvent?(.translationDelta(value)) }
 
-        case "response.text.text":
+        case "response.text.text", "response.audio_transcript.text":
             let confirmed = event["text"] as? String ?? ""
             let stash = event["stash"] as? String ?? ""
             let value = confirmed + stash

@@ -37,6 +37,7 @@ struct AudioRoutingSettings: View {
                 inputSection
                 incomingSection
                 outgoingSection
+                voiceCloneSection
             }
             .formStyle(.grouped)
         }
@@ -149,19 +150,28 @@ struct AudioRoutingSettings: View {
                            disabled: model.outputDeviceUID.isEmpty
                              || model.mode == .transcribe)
 
-            Toggle(t("settings.voice.clone"), isOn: $model.clonesVoice)
-                .disabled(model.isRunning || !model.speaksTranslation)
         } header: {
             Text(t("settings.audio.local.section"))
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 Text(t("settings.audio.local.footer"))
-                Text(t("settings.voice.clone.footer"))
                 Link(t("settings.voice.blackhole"),
                      destination: URL(string: "https://existential.audio/blackhole/")!)
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+        }
+    }
+
+    private var voiceCloneSection: some View {
+        Section {
+            Toggle(t("settings.voice.clone"), isOn: $model.clonesVoice)
+                .disabled(model.isRunning || model.mode == .transcribe
+                    || !(model.speaksRemoteTranslation || model.speaksTranslation))
+        } footer: {
+            Text(t("settings.voice.clone.footer"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
