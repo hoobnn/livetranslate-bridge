@@ -138,7 +138,8 @@ extension View {
     /// that control layer.
     func contentCard(
         radius: CGFloat = Theme.cardRadius,
-        accent: Color? = nil
+        accent: Color? = nil,
+        castsShadow: Bool = true
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return background {
@@ -150,7 +151,11 @@ extension View {
         .overlay {
             shape.strokeBorder(.separator.opacity(0.32), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.035), radius: 10, y: 3)
+        .shadow(
+            color: castsShadow ? .black.opacity(0.035) : .clear,
+            radius: castsShadow ? 10 : 0,
+            y: castsShadow ? 3 : 0
+        )
     }
 
     /// A low-emphasis pill used *inside* a glass control group. Making nested

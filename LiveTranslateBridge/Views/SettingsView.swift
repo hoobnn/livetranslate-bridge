@@ -172,23 +172,36 @@ private struct CredentialSettings: View {
     }
 
     private func reload() {
-        let stored = CredentialStore.load()
-        apiKey = stored.apiKey
-        workspaceID = stored.workspaceID
+        Task {
+            let stored = await Task.detached(priority: .userInitiated) {
+                CredentialStore.load()
+            }.value
+            apiKey = stored.apiKey
+            workspaceID = stored.workspaceID
+        }
     }
 
     private func save() {
-        let ok = CredentialStore.save(
-            CredentialStore.Credentials(apiKey: apiKey, workspaceID: workspaceID)
+        let credentials = CredentialStore.Credentials(
+            apiKey: apiKey, workspaceID: workspaceID
         )
-        saveResult = ok ? .saved : .failed
+        Task {
+            let ok = await Task.detached(priority: .userInitiated) {
+                CredentialStore.save(credentials)
+            }.value
+            saveResult = ok ? .saved : .failed
+        }
     }
 
     private func clear() {
-        CredentialStore.clear()
         apiKey = ""
         workspaceID = ""
-        saveResult = .cleared
+        Task {
+            let ok = await Task.detached(priority: .userInitiated) {
+                CredentialStore.clear()
+            }.value
+            saveResult = ok ? .cleared : .failed
+        }
     }
 }
 
@@ -370,8 +383,17 @@ private struct VoiceSettings: View {
     }
 
     private func reload() {
-        devices = AudioOutputDevice.outputs()
-        inputs = AudioInputDevice.inputs()
-        defaultInputName = AudioOutputDevice.systemDefaultInputName
+        Task {
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                (
+                    AudioOutputDevice.outputs(),
+                    AudioInputDevice.inputs(),
+                    AudioOutputDevice.systemDefaultInputName
+                )
+            }.value
+            devices = snapshot.0
+            inputs = snapshot.1
+            defaultInputName = snapshot.2
+        }
     }
 }

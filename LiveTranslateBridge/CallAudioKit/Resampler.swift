@@ -52,9 +52,7 @@ nonisolated public final class Resampler: @unchecked Sendable {
             (Double(buffer.frameLength) * ratio).rounded(.up) + 64
         )
         // Reused across calls. Capture hands this the same frame count every
-        // time, so after the first buffer the allocation never repeats — and
-        // this runs on the Core Audio IO thread, where allocating is the kind
-        // of unbounded-latency call that costs dropped frames.
+        // time, so after the first buffer the allocation never repeats.
         let output: AVAudioPCMBuffer
         if let reusable = outputBuffer, reusable.frameCapacity >= capacity {
             output = reusable

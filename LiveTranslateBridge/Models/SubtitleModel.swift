@@ -157,7 +157,8 @@ final class SubtitleModel {
 
     /// One utterance. `transcript` is the source language, `translation` the
     /// target; both arrive as cumulative snapshots until `isComplete`.
-    struct Entry: Identifiable, Equatable {
+    @Observable
+    final class Entry: Identifiable, Equatable {
         let id = UUID()
         var direction: Direction = .remote
         var transcript: String = ""
@@ -167,7 +168,7 @@ final class SubtitleModel {
         /// When the utterance opened, not when it closed: what a reader
         /// scanning the board wants is when someone started speaking, and it
         /// is also the only one of the two that never moves once shown.
-        let startedAt: Date = .now
+        let startedAt: Date
 
         /// Whether the entry directly above came from the same side.
         ///
@@ -175,7 +176,7 @@ final class SubtitleModel {
         /// it only changes when an entry is added or removed, while the view
         /// redraws on every streamed delta. Keeping it here means a board of
         /// any length costs nothing per delta to lay out, and it is written
-        /// in exactly one place — `liveIndex(_:)`, where the board grows.
+        /// in exactly one place — `liveEntry(_:)`, where the board grows.
         var continuesRun = false
 
         /// The complement, and the one the spacing reads: a card that opens a
@@ -183,6 +184,35 @@ final class SubtitleModel {
         /// the first card on the board starts no *new* run, so it takes no
         /// leading gap.
         var startsNewSpeaker = false
+
+        init(
+            direction: Direction = .remote,
+            transcript: String = "",
+            translation: String = "",
+            isComplete: Bool = false,
+            startedAt: Date = .now,
+            continuesRun: Bool = false,
+            startsNewSpeaker: Bool = false
+        ) {
+            self.direction = direction
+            self.transcript = transcript
+            self.translation = translation
+            self.isComplete = isComplete
+            self.startedAt = startedAt
+            self.continuesRun = continuesRun
+            self.startsNewSpeaker = startsNewSpeaker
+        }
+
+        static func == (lhs: Entry, rhs: Entry) -> Bool {
+            lhs.id == rhs.id
+                && lhs.direction == rhs.direction
+                && lhs.transcript == rhs.transcript
+                && lhs.translation == rhs.translation
+                && lhs.isComplete == rhs.isComplete
+                && lhs.startedAt == rhs.startedAt
+                && lhs.continuesRun == rhs.continuesRun
+                && lhs.startsNewSpeaker == rhs.startsNewSpeaker
+        }
 
         var isEmpty: Bool { transcript.isEmpty && translation.isEmpty }
 
@@ -230,6 +260,19 @@ final class SubtitleModel {
     }
 
     private(set) var entries: [Entry] = []
+    private struct ArchivedEntry {
+        let direction: Direction
+        let transcript: String
+        let translation: String
+        let startedAt: Date
+    }
+    @ObservationIgnored private var archivedEntries: [ArchivedEntry] = []
+    @ObservationIgnored private var liveEntries: [Direction: Entry] = [:]
+    private static let residentEntryLimit = 500
+    private static let renderedEntryLimit = 250
+
+    var entryCount: Int { archivedEntries.count + entries.count }
+    var visibleEntries: ArraySlice<Entry> { entries.suffix(Self.renderedEntryLimit) }
     private(set) var status: Status = .idle
     private(set) var callState: CallState = .idle
     private(set) var isRunning = false
@@ -469,7 +512,9 @@ final class SubtitleModel {
 
     private var session: CallAudioSession?
     private var clients: [Direction: TranslationClient] = [:]
-    private var player: TranslationPlayer?
+    @ObservationIgnored private var eventBatchers: [Direction: TranslationEventBatcher] = [:]
+    @ObservationIgnored private var startupTask: Task<Void, Never>?
+    private let playbackPath = TranslationPlaybackPath()
 
     /// One per direction, held outside the actor because the Core Audio IO
     /// thread feeds audio in without hopping to the main actor — that hop would
@@ -482,11 +527,6 @@ final class SubtitleModel {
 
     func start() {
         guard !isRunning else { return }
-        let credentials = CredentialStore.load()
-        guard credentials.isComplete else {
-            status = .failed(StartFailure.missingCredentials.message)
-            return
-        }
         guard #available(macOS 14.2, *) else {
             status = .failed(StartFailure.unsupportedSystem.message)
             return
@@ -499,7 +539,6 @@ final class SubtitleModel {
             return
         }
 
-        entries.removeAll()
         isRunning = true
         status = .connecting
         // Pinned for the session's lifetime. The picker is disabled while
@@ -508,6 +547,44 @@ final class SubtitleModel {
         // rather than the live preference to decide how to lay them out.
         runningMode = mode
         runningScope = scope
+
+        // Keychain and Core Audio device discovery can both synchronously
+        // cross process boundaries. Keep that work away from the main actor so
+        // pressing Start never stalls window input or the first animation.
+        let inputUID = inputDeviceUID
+        let outputUID = outputDeviceUID
+        startupTask = Task { [weak self] in
+            let prepared = await Task.detached(priority: .userInitiated) {
+                (
+                    CredentialStore.load(),
+                    AudioInputDevice.named(uid: inputUID),
+                    AudioOutputDevice.named(uid: outputUID)
+                )
+            }.value
+            guard !Task.isCancelled, let self, self.isRunning else { return }
+            self.startupTask = nil
+            guard prepared.0.isComplete else {
+                self.isRunning = false
+                self.status = .failed(StartFailure.missingCredentials.message)
+                return
+            }
+            self.startPrepared(
+                credentials: prepared.0,
+                inputDevice: prepared.1,
+                outputDevice: prepared.2
+            )
+        }
+    }
+
+    private func startPrepared(
+        credentials: CredentialStore.Credentials,
+        inputDevice: AudioInputDevice?,
+        outputDevice: AudioOutputDevice?
+    ) {
+        guard isRunning else { return }
+        entries.removeAll()
+        archivedEntries.removeAll()
+        liveEntries.removeAll()
 
         // A socket is opened only for a side that is actually captured. The
         // unused one is not merely left idle: an open session with no audio
@@ -536,8 +613,7 @@ final class SubtitleModel {
         // never while transcribing — there is no translation to speak — and
         // never when our own side is not captured in the first place.
         if scope.captures(.local) {
-            if speaksTranslation { startPlayer() }
-            let wantsAudio = player != nil
+            let wantsAudio = speaksTranslation && startPlayer(device: outputDevice)
             let uplink = makeClient(
                 direction: .local,
                 credentials: credentials,
@@ -557,7 +633,7 @@ final class SubtitleModel {
         let session = CallAudioSession()
         session.capturesUplink = scope.captures(.local)
         session.capturesDownlink = scope.captures(.remote)
-        session.uplinkDevice = AudioInputDevice.named(uid: inputDeviceUID)
+        session.uplinkDevice = inputDevice
         session.onDownlink = { [weak self] buffer in
             self?.forward(tapBuffer: buffer)
         }
@@ -578,34 +654,38 @@ final class SubtitleModel {
     /// Opens the playback engine, downgrading to subtitles-only rather than
     /// failing the whole session if the device cannot be opened — a missing
     /// BlackHole should not cost the user their subtitles.
-    private func startPlayer() {
-        let device = AudioOutputDevice.named(uid: outputDeviceUID)
+    @discardableResult
+    private func startPlayer(device: AudioOutputDevice?) -> Bool {
         let player = TranslationPlayer()
         player.onPlaybackChange = { [weak self] speaking in
             Task { @MainActor [weak self] in self?.isSpeaking = speaking }
         }
         do {
             try player.start(device: device)
-            self.player = player
+            playbackPath.install(player)
+            return true
         } catch {
             BridgeLog.audio.error(
                 "translation playback unavailable: \("\(error)", privacy: .public)"
             )
-            self.player = nil
+            playbackPath.install(nil)
+            return false
         }
     }
 
     func stop() {
         guard isRunning else { return }
         isRunning = false
+        startupTask?.cancel()
+        startupTask = nil
         session?.stop()
         session = nil
         for client in clients.values { client.close() }
         clients.removeAll()
+        eventBatchers.removeAll()
         downlinkPath.install(client: nil)
         uplinkPath.install(client: nil)
-        player?.stop()
-        player = nil
+        playbackPath.stop()
         isSpeaking = false
         status = .idle
         callState = .idle
@@ -617,6 +697,8 @@ final class SubtitleModel {
     /// cleared down to the part worth reading.
     func clearEntries() {
         entries.removeAll()
+        archivedEntries.removeAll()
+        liveEntries.removeAll()
     }
 
     /// The whole board as text, source line above translation, for the copy
@@ -627,14 +709,40 @@ final class SubtitleModel {
     /// it is a density choice, but pasted into notes the transcript has lost
     /// the running session that made "when" obvious.
     var transcriptText: String {
-        entries.map { entry in
-            let head = "[\(entry.timeLabel)] \(entry.direction.label)"
-            return ([head, entry.transcript, entry.translation]
+        let archived = archivedEntries.map { entry in
+            transcriptBlock(
+                direction: entry.direction,
+                startedAt: entry.startedAt,
+                transcript: entry.transcript,
+                translation: entry.translation
+            )
+        }
+        let resident = entries.map { entry in
+            transcriptBlock(
+                direction: entry.direction,
+                startedAt: entry.startedAt,
+                transcript: entry.transcript,
+                translation: entry.translation
+            )
+        }
+        return (archived + resident)
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func transcriptBlock(
+        direction: Direction,
+        startedAt: Date,
+        transcript: String,
+        translation: String
+    ) -> String {
+        let time = startedAt.formatted(
+            .dateTime.hour(.twoDigits(amPM: .omitted)).minute().second()
+        )
+        let head = "[\(time)] \(direction.label)"
+        return ([head, transcript, translation]
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n"))
-        }
-        .filter { !$0.isEmpty }
-        .joined(separator: "\n\n")
     }
 
     // MARK: - audio
@@ -642,21 +750,12 @@ final class SubtitleModel {
     /// Called on the Core Audio IO thread, never on the main actor.
     @available(macOS 14.2, *)
     private nonisolated func forward(tapBuffer: DownlinkTap.Buffer) {
-        downlinkPath.send({ try? $0.convert(tapBuffer: tapBuffer) }, sourceFormat: {
-            AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: tapBuffer.sampleRate,
-                channels: AVAudioChannelCount(tapBuffer.channelCount),
-                interleaved: true
-            )
-        })
+        downlinkPath.enqueue(tapBuffer)
     }
 
     /// Likewise on the microphone's IO thread.
     private nonisolated func forward(micBuffer: AVAudioPCMBuffer) {
-        uplinkPath.send({ try? $0.convert(micBuffer) }, sourceFormat: {
-            micBuffer.format
-        })
+        uplinkPath.enqueue(micBuffer)
     }
 
     private func apply(callState state: CallState) {
@@ -703,9 +802,18 @@ final class SubtitleModel {
             voice: voice
         )
         let client = TranslationClient(config: config)
-        client.onEvent = { [weak self] event in
-            Task { @MainActor [weak self] in self?.handle(event, from: direction) }
+        let batcher = TranslationEventBatcher(
+            label: "app.livetranslate.events.\(direction.rawValue)"
+        ) { [weak self] events in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                for event in events { self.handle(event, from: direction) }
+            }
+        } deliverAudio: { [playbackPath] data in
+            if direction == .local { playbackPath.enqueue(data) }
         }
+        eventBatchers[direction] = batcher
+        client.onEvent = { [weak batcher] event in batcher?.submit(event) }
         return client
     }
 
@@ -720,13 +828,13 @@ final class SubtitleModel {
                 status = runningScope.needsCall ? .waitingForCall : .running
             }
         case .transcript(let text):
-            entries[liveIndex(direction)].transcript = text
+            liveEntry(direction).transcript = text
             noteLiveTextChanged()
         case .transcriptDelta(let text):
-            entries[liveIndex(direction)].transcript += text
+            liveEntry(direction).transcript += text
             noteLiveTextChanged()
         case .transcriptComplete(let text):
-            if !text.isEmpty { entries[liveIndex(direction)].transcript = text }
+            if !text.isEmpty { liveEntry(direction).transcript = text }
             noteLiveTextChanged()
             // Transcribing, this is the last event an utterance gets: no
             // translation follows, so nothing else would ever close the entry
@@ -736,19 +844,19 @@ final class SubtitleModel {
             // translation in a fresh entry of its own.
             if runningMode == .transcribe { seal(direction) }
         case .translation(let text):
-            entries[liveIndex(direction)].translation = text
+            liveEntry(direction).translation = text
             noteLiveTextChanged()
         case .translationDelta(let text):
-            entries[liveIndex(direction)].translation += text
+            liveEntry(direction).translation += text
             noteLiveTextChanged()
         case .translationComplete(let text):
-            if !text.isEmpty { entries[liveIndex(direction)].translation = text }
+            if !text.isEmpty { liveEntry(direction).translation = text }
             noteLiveTextChanged()
             seal(direction)
         case .audio(let pcm):
             // Only our own side is ever synthesised; the far end's translation
             // is read, not spoken, or we would talk over the call.
-            if direction == .local { player?.enqueue(pcm) }
+            if direction == .local { playbackPath.enqueue(pcm) }
         case .failed(let message):
             status = .failed(message)
         case .finished:
@@ -816,8 +924,13 @@ final class SubtitleModel {
                       ? "那一项覆盖的是整个季度，而不只是试点阶段。" : "",
                   isComplete: false),
         ]
+        archivedEntries.removeAll()
+        liveEntries.removeAll()
+        if let open = entries.last(where: { !$0.isComplete }) {
+            liveEntries[open.direction] = open
+        }
         // The board is built here in one go rather than grown through
-        // `liveIndex`, so the run flags it would have written have to be
+        // `liveEntry`, so the run flags it would have written have to be
         // filled in after the fact — otherwise the preview shows a header on
         // every card and none of the grouping the layout is being checked for.
         for index in entries.indices { repairRunFlags(at: index) }
@@ -856,18 +969,16 @@ final class SubtitleModel {
         apply(callState: state)
     }
 
-    /// Index of the entry currently being written to, appending a fresh one
+    /// Entry currently being written to, appending a fresh one
     /// when the previous utterance from *this direction* has been sealed.
     ///
     /// The two directions interleave on one timeline, so the open entry for one
     /// side is not necessarily the last one on the board — the far end can start
-    /// a sentence while ours is still streaming. `Entry` is a value type, so
-    /// callers must write through this index rather than a returned copy.
-    private func liveIndex(_ direction: Direction) -> Int {
-        if let index = entries.lastIndex(
-            where: { $0.direction == direction && !$0.isComplete }
-        ) { return index }
-        var entry = Entry(direction: direction)
+    /// a sentence while ours is still streaming. Keeping a direct reference
+    /// makes lookup O(1) and lets SwiftUI invalidate only this card.
+    private func liveEntry(_ direction: Direction) -> Entry {
+        if let entry = liveEntries[direction], !entry.isComplete { return entry }
+        let entry = Entry(direction: direction)
         // The run flags are fixed the moment the card joins the board: what
         // sits above it never changes afterwards, because entries are only
         // ever appended here and removed by `seal` — which repairs them.
@@ -876,7 +987,9 @@ final class SubtitleModel {
             entry.startsNewSpeaker = previous.direction != direction
         }
         entries.append(entry)
-        return entries.count - 1
+        liveEntries[direction] = entry
+        trimResidentEntries()
+        return entry
     }
 
     /// Bumped whenever the live card's text grows, so the view can follow the
@@ -904,10 +1017,9 @@ final class SubtitleModel {
     /// Marks that direction's current utterance done so the next event from it
     /// starts a new one.
     private func seal(_ direction: Direction) {
-        guard let index = entries.lastIndex(
-            where: { $0.direction == direction && !$0.isComplete }
-        ) else { return }
-        if entries[index].isEmpty {
+        guard let entry = liveEntries.removeValue(forKey: direction),
+              let index = entries.firstIndex(where: { $0 === entry }) else { return }
+        if entry.isEmpty {
             entries.remove(at: index)
             // The card that followed the removed one now has a different
             // neighbour above it, so its run flags describe a board that no
@@ -916,7 +1028,28 @@ final class SubtitleModel {
             repairRunFlags(at: index)
             return
         }
-        entries[index].isComplete = true
+        entry.isComplete = true
+        trimResidentEntries()
+    }
+
+    /// Keeps observation and layout metadata bounded on multi-hour calls.
+    /// Only completed prefix entries are archived, so a still-streaming turn
+    /// is never detached from the card the user is watching.
+    private func trimResidentEntries() {
+        guard entries.count > Self.residentEntryLimit else { return }
+        let batchSize = min(100, entries.count - Self.residentEntryLimit + 99)
+        let completedPrefix = entries.prefix(batchSize).prefix { $0.isComplete }
+        guard !completedPrefix.isEmpty else { return }
+        archivedEntries.append(contentsOf: completedPrefix.map {
+            ArchivedEntry(
+                direction: $0.direction,
+                transcript: $0.transcript,
+                translation: $0.translation,
+                startedAt: $0.startedAt
+            )
+        })
+        entries.removeFirst(completedPrefix.count)
+        repairRunFlags(at: 0)
     }
 
     /// Recomputes one entry's run flags against whatever now precedes it.

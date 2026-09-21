@@ -19,7 +19,7 @@ struct LiveTranslateBridgeApp: App {
     @State private var localization = LocalizationStore.shared
 
     var body: some Scene {
-        WindowGroup {
+        Window("LiveTranslateBridge", id: "main") {
             ContentView(model: model)
                 .localized(localization)
                 // A board with entries on it needs credentials and a live

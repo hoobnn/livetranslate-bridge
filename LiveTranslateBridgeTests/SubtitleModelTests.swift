@@ -18,6 +18,19 @@ import Testing
 @MainActor
 struct SubtitleEntryTests {
 
+    @Test func longCallsKeepOnlyABoundedRenderedWorkingSet() {
+        let model = SubtitleModel()
+        for index in 0..<600 {
+            model.ingestForTesting(.translationComplete("line-\(index)"))
+        }
+
+        #expect(model.entryCount == 600)
+        #expect(model.entries.count == 500)
+        #expect(model.visibleEntries.count == 250)
+        #expect(model.transcriptText.contains("line-0"))
+        #expect(model.transcriptText.contains("line-599"))
+    }
+
     @Test func snapshotsReplaceRatherThanAppend() {
         let model = SubtitleModel()
         model.ingestForTesting(.translation("你好"))

@@ -163,7 +163,9 @@ nonisolated public final class LogStore: @unchecked Sendable {
     private static let capacity = 2000
 
     private let lock = NSLock()
-    private var buffer: [Line] = []
+    private var buffer: [Line?] = Array(repeating: nil, count: capacity)
+    private var bufferStart = 0
+    private var bufferCount = 0
     private var pending: [Line] = []
     private var nextID: UInt64 = 0
     private var isFlushScheduled = false
@@ -178,9 +180,12 @@ nonisolated public final class LogStore: @unchecked Sendable {
         let line = Line(id: nextID, date: Date(), category: category,
                         level: level, message: message)
         nextID += 1
-        buffer.append(line)
-        if buffer.count > Self.capacity {
-            buffer.removeFirst(buffer.count - Self.capacity)
+        let index = (bufferStart + bufferCount) % Self.capacity
+        buffer[index] = line
+        if bufferCount < Self.capacity {
+            bufferCount += 1
+        } else {
+            bufferStart = (bufferStart + 1) % Self.capacity
         }
         pending.append(line)
         let shouldSchedule = !isFlushScheduled
@@ -209,12 +214,16 @@ nonisolated public final class LogStore: @unchecked Sendable {
     /// Everything still in the ring, for a pane that opens mid-session.
     public func snapshot() -> [Line] {
         lock.lock(); defer { lock.unlock() }
-        return buffer
+        return (0..<bufferCount).compactMap {
+            buffer[(bufferStart + $0) % Self.capacity]
+        }
     }
 
     public func clear() {
         lock.lock()
-        buffer.removeAll(keepingCapacity: true)
+        buffer = Array(repeating: nil, count: Self.capacity)
+        bufferStart = 0
+        bufferCount = 0
         pending.removeAll(keepingCapacity: true)
         lock.unlock()
     }

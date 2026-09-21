@@ -5,6 +5,8 @@ import SwiftUI
 struct SubtitleView: View {
     @Bindable var model: SubtitleModel
     @State private var log = LogModel()
+    @State private var isFollowingLatest = true
+    private let tailID = "subtitle-tail"
 
     /// Collapsed by default, and remembered: the log is a debugging surface,
     /// but someone who opened it once is usually still debugging next launch.
@@ -107,8 +109,8 @@ struct SubtitleView: View {
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            if !model.entries.isEmpty {
-                Text(t("subtitles.entryCount", model.entries.count))
+            if model.entryCount > 0 {
+                Text(t("subtitles.entryCount", model.entryCount))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -128,14 +130,14 @@ struct SubtitleView: View {
             } label: {
                 Label(t("subtitles.copyAll"), systemImage: "document.on.document")
             }
-            .disabled(model.entries.isEmpty)
+            .disabled(model.entryCount == 0)
 
             Button {
                 withAnimation(.snappy) { model.clearEntries() }
             } label: {
                 Label(t("subtitles.clear"), systemImage: "eraser")
             }
-            .disabled(model.entries.isEmpty)
+            .disabled(model.entryCount == 0)
         }
     }
 
@@ -151,7 +153,7 @@ struct SubtitleView: View {
                 // enumerating the whole board on each of those redraws was
                 // work proportional to a long call's length per delta.
                 LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(model.entries) { entry in
+                    ForEach(model.visibleEntries) { entry in
                         EntryCard(
                             entry: entry,
                             showsTranslation: model.runningMode == .translate,
@@ -171,6 +173,7 @@ struct SubtitleView: View {
                                 .combined(with: .opacity)
                             )
                     }
+                    Color.clear.frame(height: 1).id(tailID)
                 }
                 .padding(.horizontal, Theme.pageInset)
                 .padding(.vertical, 14)
@@ -178,7 +181,7 @@ struct SubtitleView: View {
             }
             .scrollContentBackground(.hidden)
             .overlay {
-                if model.entries.isEmpty {
+                if model.entryCount == 0 {
                     EmptyState(
                         status: model.status,
                         mode: model.mode,
@@ -187,9 +190,9 @@ struct SubtitleView: View {
                 }
             }
             .onChange(of: model.entries.last?.id) { _, id in
-                guard let id else { return }
+                guard id != nil, isFollowingLatest else { return }
                 withAnimation(.easeOut(duration: 0.24)) {
-                    proxy.scrollTo(id, anchor: .bottom)
+                    proxy.scrollTo(tailID, anchor: .bottom)
                 }
             }
             // The in-progress card grows as text streams in; following its
@@ -202,8 +205,25 @@ struct SubtitleView: View {
             // this at most once per frame's worth of deltas, which is as
             // often as the scroll position can actually change on screen.
             .onChange(of: model.scrollTick) { _, _ in
-                guard let id = model.entries.last?.id else { return }
-                proxy.scrollTo(id, anchor: .bottom)
+                guard model.entries.last != nil, isFollowingLatest else { return }
+                proxy.scrollTo(tailID, anchor: .bottom)
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height <= geometry.containerSize.height
+                    || geometry.visibleRect.maxY >= geometry.contentSize.height - 24
+            } action: { _, isAtBottom in
+                if isAtBottom { isFollowingLatest = true }
+            }
+            .onScrollPhaseChange { _, phase, context in
+                if phase == .tracking || phase == .interacting {
+                    isFollowingLatest = false
+                } else if phase == .idle {
+                    let geometry = context.geometry
+                    isFollowingLatest = geometry.contentSize.height
+                        <= geometry.containerSize.height
+                        || geometry.visibleRect.maxY
+                            >= geometry.contentSize.height - 24
+                }
             }
         }
     }
@@ -307,7 +327,7 @@ private struct EntryCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 9)
         .padding(.horizontal, 13)
-        .contentCard(radius: Theme.bubbleRadius, accent: accent)
+        .contentCard(radius: Theme.bubbleRadius, accent: accent, castsShadow: false)
         // The in-progress card is marked so the eye knows where the text is
         // still changing — a tinted edge rather than a second background, so
         // it stays legible against glass in both appearances. It sits on the

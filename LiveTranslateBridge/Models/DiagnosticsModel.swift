@@ -1,7 +1,9 @@
 import AVFoundation
+import Accelerate
 import Foundation
 import Observation
 import os
+import Synchronization
 
 /// Backs the debug panel, which replaces the old CLI's `status`, `levels`,
 /// `clean` and `translate-file` commands.
@@ -75,22 +77,42 @@ final class DiagnosticsModel {
 
     /// Peak levels written from the audio threads, drained on a timer.
     private nonisolated final class Meter: @unchecked Sendable {
-        private let lock = NSLock()
-        private var downlink: Float = 0
-        private var uplink: Float = 0
+        private let downlink = Atomic<UInt32>(0)
+        private let uplink = Atomic<UInt32>(0)
 
         func record(downlink value: Float) {
-            lock.lock(); if value > downlink { downlink = value }; lock.unlock()
+            record(value, into: downlink)
         }
         func record(uplink value: Float) {
-            lock.lock(); if value > uplink { uplink = value }; lock.unlock()
+            record(value, into: uplink)
         }
         /// Returns the peaks since the last call and resets them.
         func drain() -> (Float, Float) {
-            lock.lock(); defer { lock.unlock() }
-            let result = (downlink, uplink)
-            downlink = 0; uplink = 0
-            return result
+            (
+                Float(bitPattern: downlink.exchange(
+                    0, ordering: .acquiringAndReleasing
+                )),
+                Float(bitPattern: uplink.exchange(
+                    0, ordering: .acquiringAndReleasing
+                ))
+            )
+        }
+
+        private func record(
+            _ value: Float,
+            into peak: borrowing Atomic<UInt32>
+        ) {
+            let desired = max(0, value).bitPattern
+            var current = peak.load(ordering: .relaxed)
+            while desired > current {
+                let result = peak.compareExchange(
+                    expected: current,
+                    desired: desired,
+                    ordering: .relaxed
+                )
+                if result.exchanged { return }
+                current = result.original
+            }
         }
     }
 
@@ -120,6 +142,7 @@ final class DiagnosticsModel {
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.drainMeter() }
         }
+        timer.tolerance = 0.02
         RunLoop.main.add(timer, forMode: .common)
         meterTimer = timer
 
@@ -179,9 +202,7 @@ final class DiagnosticsModel {
         capture.onBuffer = { [meter] buffer in
             guard let data = buffer.floatChannelData?[0] else { return }
             var peak: Float = 0
-            for index in 0..<Int(buffer.frameLength) {
-                peak = max(peak, abs(data[index]))
-            }
+            vDSP_maxmgv(data, 1, &peak, vDSP_Length(buffer.frameLength))
             meter.record(uplink: peak)
         }
         do {
@@ -204,9 +225,10 @@ final class DiagnosticsModel {
             let tap = DownlinkTap()
             tap.onBuffer = { [meter] buffer in
                 var peak: Float = 0
-                for index in 0..<(buffer.frameCount * buffer.channelCount) {
-                    peak = max(peak, abs(buffer.samples[index]))
-                }
+                vDSP_maxmgv(
+                    buffer.samples, 1, &peak,
+                    vDSP_Length(buffer.frameCount * buffer.channelCount)
+                )
                 meter.record(downlink: peak)
             }
             do {

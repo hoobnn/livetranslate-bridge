@@ -145,6 +145,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     private var isOpen = false
     private var sawSessionUpdated = false
     private var pendingAudio: [Data] = []
+    private var pendingAudioBytes = 0
     private var finishContinuation: CheckedContinuation<Void, Never>?
     private var readyContinuations: [CheckedContinuation<Bool, Never>] = []
     private var readyCallbacks: [@Sendable (Bool) -> Void] = []
@@ -190,6 +191,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// is configured. One second is enough to cover a reopen without letting
     /// a long outage push stale speech into the call.
     private var reconnectBuffer: [Data] = []
+    private var reconnectBufferedBytes = 0
 
     /// Reopen after this long without a single inbound frame. The service
     /// closes an idle session on its own, and the drop is not always reported
@@ -208,6 +210,21 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// buffer by duration rather than by chunk count, which varies with the
     /// capture device's buffer size.
     private static let reconnectBufferBytes = 32_000
+
+    /// WebSocketTask accepts concurrent sends, but unconstrained sends turn a
+    /// brief network stall into hundreds of live completion handlers. A
+    /// single pump preserves ordering and makes the in-flight bound explicit.
+    private struct OutboundMessage: @unchecked Sendable {
+        let text: String
+        let task: URLSessionWebSocketTask
+        let generation: Int
+        let isAudio: Bool
+    }
+    private static let outboundAudioLimit = 10
+    private let outboundQueue = DispatchQueue(label: "call-audio-bridge.outbound")
+    private var outboundMessages: [OutboundMessage] = []
+    private var outboundHead = 0
+    private var outboundInFlight = false
 
     private var sweepTimer: DispatchSourceTimer?
     private let sweepQueue = DispatchQueue(label: "call-audio-bridge.keepalive")
@@ -458,7 +475,9 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         guard sweepTimer == nil, !isRetired else { lock.unlock(); return }
         let timer = DispatchSource.makeTimerSource(queue: sweepQueue)
         timer.schedule(
-            deadline: .now() + Self.sweepInterval, repeating: Self.sweepInterval
+            deadline: .now() + Self.sweepInterval,
+            repeating: Self.sweepInterval,
+            leeway: .milliseconds(500)
         )
         timer.setEventHandler { [weak self] in self?.sweepIfStalled() }
         sweepTimer = timer
@@ -510,8 +529,14 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         isRetired = true
         sawSessionUpdated = false
         pendingAudio.removeAll()
+        pendingAudioBytes = 0
         reconnectBuffer.removeAll()
+        reconnectBufferedBytes = 0
         lock.unlock()
+        outboundQueue.async { [weak self] in
+            self?.outboundMessages.removeAll()
+            self?.outboundHead = 0
+        }
         timer?.cancel()
         task?.cancel(with: .goingAway, reason: nil)
     }
@@ -611,28 +636,35 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         // audio older than that arrives too late to be worth translating.
         guard task != nil, !isDead else {
             reconnectBuffer.append(pcm)
-            var held = reconnectBuffer.reduce(0) { $0 + $1.count }
-            while held > Self.reconnectBufferBytes, !reconnectBuffer.isEmpty {
-                held -= reconnectBuffer.removeFirst().count
+            reconnectBufferedBytes += pcm.count
+            while reconnectBufferedBytes > Self.reconnectBufferBytes,
+                  !reconnectBuffer.isEmpty {
+                reconnectBufferedBytes -= reconnectBuffer.removeFirst().count
             }
             lock.unlock()
             return
         }
 
         if !sawSessionUpdated {
-            // Bound the backlog so a stalled handshake cannot grow without end.
-            let dropped = pendingAudio.count >= 200
-            if !dropped { pendingAudio.append(pcm) }
-            let depth = pendingAudio.count
+            // One second by bytes, not by device-dependent callback count.
+            pendingAudio.append(pcm)
+            pendingAudioBytes += pcm.count
+            var dropped = false
+            while pendingAudioBytes > Self.reconnectBufferBytes,
+                  !pendingAudio.isEmpty {
+                pendingAudioBytes -= pendingAudio.removeFirst().count
+                dropped = true
+            }
+            let depth = pendingAudioBytes
             let shouldLog = dropped && noteQueueFullLocked()
             lock.unlock()
             // A handshake that never lands looks exactly like a working
             // capture from the audio side, so say it out loud — but once a
-            // second, not once per buffer: this runs on the IO thread, and at
-            // ten buffers a second the log itself becomes the problem.
+            // second, not once per buffer: at ten buffers a second the log
+            // itself otherwise becomes the problem.
             if shouldLog {
                 BridgeLog.socket.error(
-                    "queue full at \(depth, privacy: .public); session.updated never arrived, discarding audio"
+                    "handshake audio queue capped at \(depth, privacy: .public) bytes; discarding oldest audio"
                 )
             }
             return
@@ -655,18 +687,19 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         send([
             "type": "input_audio_buffer.append",
             "audio": pcm.base64EncodedString(),
-        ])
+        ], isAudio: true)
     }
 
     private func flushPendingAudio() {
         lock.lock()
         let queued = pendingAudio
         pendingAudio.removeAll()
+        pendingAudioBytes = 0
         lock.unlock()
         for chunk in queued { appendAudio(chunk) }
     }
 
-    private func send(_ payload: [String: Any]) {
+    private func send(_ payload: [String: Any], isAudio: Bool = false) {
         lock.lock()
         let task = self.task
         let generation = self.generation
@@ -674,23 +707,68 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         guard let task,
               let data = try? JSONSerialization.data(withJSONObject: payload),
               let text = String(data: data, encoding: .utf8) else { return }
-        task.send(.string(text)) { [weak self] error in
-            guard let self, let error else { return }
+        let message = OutboundMessage(
+            text: text, task: task, generation: generation, isAudio: isAudio
+        )
+        outboundQueue.async { [weak self] in
+            guard let self else { return }
+            if isAudio {
+                let start = self.outboundHead + (self.outboundInFlight ? 1 : 0)
+                let queuedAudio = self.outboundMessages[start...]
+                    .lazy.filter(\.isAudio).count
+                if queuedAudio >= Self.outboundAudioLimit {
+                    guard let stale = self.outboundMessages[start...]
+                        .firstIndex(where: \.isAudio) else { return }
+                    self.outboundMessages.remove(at: stale)
+                }
+            }
+            self.outboundMessages.append(message)
+            self.pumpOutbound()
+        }
+    }
+
+    private func pumpOutbound() {
+        guard !outboundInFlight else { return }
+        while outboundHead < outboundMessages.count,
+              !isCurrent(outboundMessages[outboundHead].generation) {
+            outboundHead += 1
+        }
+        guard outboundHead < outboundMessages.count else {
+            outboundMessages.removeAll(keepingCapacity: true)
+            outboundHead = 0
+            return
+        }
+        let message = outboundMessages[outboundHead]
+        outboundInFlight = true
+        message.task.send(.string(message.text)) { [weak self] error in
+            guard let self else { return }
+            self.outboundQueue.async {
+                self.outboundInFlight = false
+                self.outboundHead += 1
+                if self.outboundHead >= 64,
+                   self.outboundHead * 2 >= self.outboundMessages.count {
+                    self.outboundMessages.removeFirst(self.outboundHead)
+                    self.outboundHead = 0
+                }
+                if let error { self.handleSendFailure(error, generation: message.generation) }
+                self.pumpOutbound()
+            }
+        }
+    }
+
+    private func handleSendFailure(_ error: Error, generation: Int) {
             // As in `receiveNext`: a send that failed on a socket already
             // replaced is reporting the old connection's death, not the new
             // one's.
-            guard self.isCurrent(generation) else { return }
-            guard !self.isClosingNow else { self.markDead(); return }
-            BridgeLog.socket.error(
-                "send failed: \(error.localizedDescription, privacy: .public)"
-            )
-            // Not reported as a session failure: the socket is about to be
-            // reopened, and a red status for a drop the user never notices
-            // would be worse than the drop. `.failed` stays for the errors
-            // reconnecting cannot fix — bad credentials, a rejected session —
-            // which the service sends as an `error` frame.
-            self.markDead(reason: "send failed: \(error.localizedDescription)")
-        }
+        guard isCurrent(generation) else { return }
+        guard !isClosingNow else { markDead(); return }
+        BridgeLog.socket.error(
+            "send failed: \(error.localizedDescription, privacy: .public)"
+        )
+        // Not reported as a session failure: the socket is about to be
+        // reopened, and a red status for a drop the user never notices would
+        // be worse than the drop.
+        markDead(reason: "send failed: \(error.localizedDescription)")
     }
 
     // MARK: - receiving
@@ -782,7 +860,13 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             // behind the handshake, so the utterance stays in order.
             let carried = reconnectBuffer
             reconnectBuffer.removeAll()
+            reconnectBufferedBytes = 0
             pendingAudio.insert(contentsOf: carried, at: 0)
+            pendingAudioBytes += carried.reduce(0) { $0 + $1.count }
+            while pendingAudioBytes > Self.reconnectBufferBytes,
+                  !pendingAudio.isEmpty {
+                pendingAudioBytes -= pendingAudio.removeFirst().count
+            }
             let queued = pendingAudio.count
             lock.unlock()
             BridgeLog.socket.notice(
@@ -893,7 +977,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// The bytes currently held for replay.
     var bufferedBytesForTesting: Int {
         lock.lock(); defer { lock.unlock() }
-        return reconnectBuffer.reduce(0) { $0 + $1.count }
+        return reconnectBufferedBytes
     }
 
     /// The chunks currently held for replay, oldest first.
@@ -908,7 +992,9 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         lock.lock()
         let carried = reconnectBuffer
         reconnectBuffer.removeAll()
+        reconnectBufferedBytes = 0
         pendingAudio.insert(contentsOf: carried, at: 0)
+        pendingAudioBytes += carried.reduce(0) { $0 + $1.count }
         let queued = pendingAudio
         lock.unlock()
         return queued

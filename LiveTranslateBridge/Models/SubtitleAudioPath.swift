@@ -6,60 +6,75 @@ import Foundation
 /// pipeline that never touches the main actor.
 ///
 /// Split out of `SubtitleModel` because it is the half with entirely different
-/// rules: everything here runs on a Core Audio IO thread, where a lock is held
-/// for as short a span as possible and an allocation is a latency bug. Keeping
+/// rules: the IO thread only publishes into a preallocated lock-free ring;
+/// conversion, metrics, logging and network work happen on its worker. Keeping
 /// it beside the observable state invited edits written for the main actor.
 extension SubtitleModel {
-    /// The client and the lazily-built resampler, shared with the IO thread.
+    /// The client and lazily-built resampler, confined to the worker queue.
     ///
     /// Internal rather than private for the same reason as `Defaults`: the
     /// model that owns it is now in another file.
     nonisolated final class AudioPath: @unchecked Sendable {
-        private let lock = NSLock()
         private let direction: Direction
         private var client: TranslationClient?
         private var resampler: Resampler?
+        private let queue: RealtimeAudioQueue
+        private let callback: Callback
+
+        private final class Callback: @unchecked Sendable {
+            weak var owner: AudioPath?
+        }
 
         init(direction: Direction) {
             self.direction = direction
+            let callback = Callback()
+            self.callback = callback
+            queue = RealtimeAudioQueue(
+                label: "app.livetranslate.audio.\(direction.rawValue)"
+            ) { [weak callback] buffer in
+                callback?.owner?.process(buffer)
+            } onDrop: { [weak callback] count in
+                callback?.owner?.report(
+                    dropped: "realtime queue full or unsupported (\(count) buffers)"
+                )
+            }
+            callback.owner = self
         }
 
         func install(client: TranslationClient?) {
-            lock.lock(); defer { lock.unlock() }
-            self.client = client
-            if client == nil { resampler = nil }
+            queue.perform { [weak self] in
+                guard let self else { return }
+                self.client = client
+                if client == nil { self.resampler = nil }
+            }
         }
 
-        /// The tap's format is only known once audio flows, so the resampler is
-        /// built on the first buffer and reused afterwards.
-        func send(_ makeData: (Resampler) -> Data?, sourceFormat: () -> AVAudioFormat?) {
-            lock.lock()
-            if resampler == nil, let format = sourceFormat() {
-                resampler = try? Resampler(sourceFormat: format)
-                if resampler == nil {
-                    BridgeLog.audio.error("resampler could not be built")
-                }
-            }
-            let converter = resampler
-            let target = client
-            lock.unlock()
+        @available(macOS 14.2, *)
+        func enqueue(_ buffer: DownlinkTap.Buffer) { queue.enqueue(buffer) }
 
-            guard let converter else { return }
-            guard let target else {
+        func enqueue(_ buffer: AVAudioPCMBuffer) { queue.enqueue(buffer) }
+
+        private func process(_ buffer: AVAudioPCMBuffer) {
+            if resampler == nil {
+                resampler = try? Resampler(sourceFormat: buffer.format)
+                if resampler == nil { BridgeLog.audio.error("resampler could not be built") }
+            }
+            guard let resampler else { return }
+            guard let client else {
                 report(dropped: "no client installed")
                 return
             }
-            guard let pcm = makeData(converter), !pcm.isEmpty else {
+            guard let pcm = try? resampler.convert(buffer), !pcm.isEmpty else {
                 report(dropped: "conversion produced no bytes")
                 return
             }
-            target.sendAudio(pcm)
+            client.sendAudio(pcm)
             report(sent: pcm)
         }
 
         /// One line a second rather than one per buffer: at 48 kHz the IO
-        /// thread arrives hundreds of times a second, and logging each one
-        /// would both flood the log and stall a realtime thread.
+        /// thread can publish hundreds of times a second, and logging each one
+        /// would flood the log and starve the worker.
         private var sentBuffers = 0
         private var peakSample = 0
         private var sentBytes = 0
@@ -91,17 +106,13 @@ extension SubtitleModel {
                 return Int(loudest)
             }
 
-            lock.lock()
             sentBuffers += 1
             sentBytes += pcm.count
             peakSample = max(peakSample, peak)
-            // `ContinuousClock` rather than `Date`: this is an elapsed-time
-            // question asked on a realtime thread, and `Date` both costs a
-            // wall-clock read and can jump when the system clock is adjusted,
-            // which would stall or spam the line for as long as the jump.
+            // `ContinuousClock` rather than `Date`: this is elapsed time and
+            // wall-clock adjustments must not stall or spam the line.
             let now = ContinuousClock.now
             guard !didReport || now - lastReport >= .seconds(1) else {
-                lock.unlock()
                 return
             }
             didReport = true
@@ -111,7 +122,6 @@ extension SubtitleModel {
             sentBuffers = 0
             sentBytes = 0
             peakSample = 0
-            lock.unlock()
 
             // Int16 full scale is 32767; the service's default VAD threshold
             // of 0.2 sits near 6553.
@@ -129,15 +139,12 @@ extension SubtitleModel {
         }
 
         private func report(dropped reason: String) {
-            lock.lock()
             let now = ContinuousClock.now
             guard !didReport || now - lastReport >= .seconds(1) else {
-                lock.unlock()
                 return
             }
             didReport = true
             lastReport = now
-            lock.unlock()
             BridgeLog.audio.error(
                 "[\(self.direction.rawValue, privacy: .public)] dropping tap audio: \(reason, privacy: .public)"
             )

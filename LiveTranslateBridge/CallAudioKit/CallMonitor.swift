@@ -119,7 +119,11 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
     /// Notifications can be missed; a 2s poll bounds how long that costs us.
     private func installPollBackstop() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 2, repeating: 2)
+        timer.schedule(
+            deadline: .now() + 2,
+            repeating: 2,
+            leeway: .milliseconds(200)
+        )
         timer.setEventHandler { [weak self] in self?.reevaluate() }
         timer.resume()
         pollTimer = timer
