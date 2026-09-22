@@ -36,6 +36,8 @@ extension SubtitleModel {
         private static let remoteTranslationVolumeKey = "remoteTranslationVolume"
         private static let localOriginalVolumeKey = "localOriginalVolume"
         private static let localTranslationVolumeKey = "localTranslationVolume"
+        private static let silenceDurationKey = "segmentationSilenceMS"
+        private static let vadThresholdKey = "segmentationThreshold"
 
         /// The pair a fresh install starts from: we speak Chinese, the far end
         /// English. Stated here rather than as literals at each use, so "what
@@ -133,6 +135,28 @@ extension SubtitleModel {
         static var localTranslationVolume: Double {
             get { storedVolume(localTranslationVolumeKey) }
             set { store.set(newValue, forKey: localTranslationVolumeKey) }
+        }
+
+        /// How the service is asked to segment speech. Stored like the
+        /// language pair: whoever tuned it once for their own calls is
+        /// running the same kind of call next launch.
+        ///
+        /// The fallback is the app's own responsive setting rather than the
+        /// service's, because the service's is a second of lag on every line
+        /// and nobody chose it.
+        static var segmentation: TranslationClient.Config.Segmentation {
+            get {
+                let fallback = TranslationClient.Config.Segmentation.responsive
+                let silence = store.object(forKey: silenceDurationKey) as? Int
+                    ?? fallback.silenceDuration
+                let threshold = store.object(forKey: vadThresholdKey) as? Double
+                    ?? fallback.threshold
+                return .init(silenceDuration: silence, threshold: threshold)
+            }
+            set {
+                store.set(newValue.silenceDuration, forKey: silenceDurationKey)
+                store.set(newValue.threshold, forKey: vadThresholdKey)
+            }
         }
 
         private static func storedVolume(_ key: String) -> Double {

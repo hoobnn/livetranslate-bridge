@@ -68,9 +68,46 @@ extension SubtitleModel {
                 report(dropped: "conversion produced no bytes")
                 return
             }
-            client.sendAudio(pcm)
+            send(pcm, to: client)
             report(sent: pcm)
         }
+
+        /// Hands the converted PCM to the socket in chunks no longer than
+        /// `Self.chunkBytes`.
+        ///
+        /// The microphone arrives in 100 ms buffers — the floor the tap API
+        /// allows — and appending one whole is a tenth of a second the
+        /// service cannot see the end of the utterance in, because the bytes
+        /// that would show it silent are still on this side. Splitting costs
+        /// nothing: the same bytes go out, the socket already serialises its
+        /// sends, and the service's own guidance is chunks in this range.
+        ///
+        /// A buffer shorter than the chunk — which is every buffer on the
+        /// tap side, at ~10 ms — is sent as it came, so the common path adds
+        /// no copy at all.
+        private func send(_ pcm: Data, to client: TranslationClient) {
+            guard pcm.count > Self.chunkBytes else {
+                client.sendAudio(pcm)
+                return
+            }
+            var start = pcm.startIndex
+            while start < pcm.endIndex {
+                let end = pcm.index(
+                    start, offsetBy: Self.chunkBytes, limitedBy: pcm.endIndex
+                ) ?? pcm.endIndex
+                // A standalone `Data`, not a slice: a chunk held back behind
+                // the handshake or across a reconnect would otherwise keep
+                // the whole source buffer alive for as long as it is queued.
+                client.sendAudio(Data(pcm[start..<end]))
+                start = end
+            }
+        }
+
+        /// 40 ms of 16 kHz mono Int16 — the long end of the range the service
+        /// recommends per append, so the split stays coarse enough not to
+        /// multiply frames while still bounding how stale the tail can be.
+        private static let chunkBytes = Int(Resampler.targetSampleRate)
+            / 25 * MemoryLayout<Int16>.size
 
         /// One line a second rather than one per buffer: at 48 kHz the IO
         /// thread can publish hundreds of times a second, and logging each one

@@ -33,6 +33,63 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         /// Whose voice the synthesised translation speaks in. Only has an
         /// effect when `wantsAudio` is on, since it is the audio it shapes.
         public var voice: Voice
+        /// How the service decides an utterance has ended. This is the single
+        /// largest lever on how fast a subtitle appears — see `Segmentation`.
+        public var segmentation: Segmentation
+
+        /// When the service closes an utterance and starts translating it.
+        ///
+        /// The service segments on silence: it waits for a gap of
+        /// `silenceDuration` after speech before committing the buffer, and
+        /// everything downstream — translation, synthesis, the subtitle —
+        /// starts only then. Left unset the service waits a full second,
+        /// which is added to every single line on the board on top of the
+        /// model's own latency. Shortening it is free latency back.
+        ///
+        /// The trade is real, though, and it is accuracy: cut the gap too
+        /// short and an ordinary mid-sentence pause — drawing breath, or
+        /// hesitating before a name — reads as the end of the utterance. The
+        /// sentence is then split in two and each half is translated without
+        /// the other's context, which is the one thing that actually makes a
+        /// translation wrong rather than merely late.
+        public struct Segmentation: Sendable, Equatable {
+            /// The silence that ends an utterance. The service accepts
+            /// 200–6000 ms.
+            public var silenceDuration: Int
+            /// How loud a frame must be to count as speech, on the service's
+            /// own [-1, 1] scale, where its default is 0.2 — roughly −14 dBFS
+            /// at Int16 full scale. Lower catches a quiet talker whose speech
+            /// would otherwise never open an utterance at all; higher keeps
+            /// room tone and keyboard noise from opening one.
+            public var threshold: Double
+
+            /// The service's own defaults, sent explicitly so the wire config
+            /// says what the session actually runs on.
+            public static let serviceDefault = Segmentation(
+                silenceDuration: 1_000, threshold: 0.2
+            )
+
+            /// What the app asks for unless the user says otherwise. 400 ms
+            /// is short enough to take more than half a second off every
+            /// line, and long enough to sit above the pauses that fall inside
+            /// a sentence — those cluster under ~300 ms in running speech.
+            public static let responsive = Segmentation(
+                silenceDuration: 400, threshold: 0.2
+            )
+
+            public init(silenceDuration: Int, threshold: Double) {
+                self.silenceDuration = min(max(silenceDuration, 200), 6_000)
+                self.threshold = min(max(threshold, -1), 1)
+            }
+
+            var payload: [String: Any] {
+                [
+                    "type": "server_vad",
+                    "threshold": threshold,
+                    "silence_duration_ms": silenceDuration,
+                ]
+            }
+        }
 
         /// The service can speak the translation in the speaker's own voice
         /// rather than a stock one.
@@ -87,8 +144,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             sourceLanguage: String? = nil,
             wantsAudio: Bool = false,
             phrases: [String: String] = [:],
-            voice: Voice = .preset
+            voice: Voice = .preset,
+            segmentation: Segmentation = .responsive
         ) {
+            self.segmentation = segmentation
             self.apiKey = apiKey
             self.workspaceID = workspaceID
             self.region = region
@@ -135,17 +194,41 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
                     session["enable_voice_clone"] = true
                     session["voice_clone_options"] = ["frequency": frequency]
                 }
+                // Sent on both schemas: the service segments on silence in
+                // either, and left out it waits its own full second before
+                // anything downstream starts. See `Segmentation`.
+                session["turn_detection"] = segmentation.payload
                 return session
             }
 
             var session: [String: Any] = [
                 "output_modalities": wantsAudio ? ["text", "audio"] : ["text"],
+                "turn_detection": segmentation.payload,
             ]
             if let translation { session["translation"] = translation }
             if let sourceLanguage {
                 session["input_audio_transcription"] = ["language": sourceLanguage]
             }
             return session
+        }
+
+        /// The same configuration speaking in the stock voice.
+        ///
+        /// Dropping the clone also drops `modelID` back to the q3.8 schema,
+        /// which is the point: the cloning model is only worth its different
+        /// session shape while cloning actually works.
+        func withPresetVoice() -> Config {
+            Config(
+                apiKey: apiKey,
+                workspaceID: workspaceID,
+                region: region,
+                targetLanguage: targetLanguage,
+                sourceLanguage: sourceLanguage,
+                wantsAudio: wantsAudio,
+                phrases: phrases,
+                voice: .preset,
+                segmentation: segmentation
+            )
         }
 
         var url: URL {
@@ -188,7 +271,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         case failed(String)
     }
 
-    private let config: Config
+    /// Mutable only so a session can fall back to the stock voice when the
+    /// service rejects the cloned one; see `handleServiceError`. Every other
+    /// field is fixed for the client's lifetime.
+    private var config: Config
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private let lock = NSLock()
@@ -246,7 +332,13 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// Reopen after this long without a single inbound frame. The service
     /// closes an idle session on its own, and the drop is not always reported
     /// as a socket error — see `sweepIfStalled()`.
-    private static let inboundTimeout: TimeInterval = 20
+    ///
+    /// Held well above the service's own quiet stretch. It routinely goes
+    /// 20-25 seconds without a frame on a live call and then resumes on its
+    /// own, so a shorter window spends the call reconnecting through healthy
+    /// silence — and every reopen costs a handshake, drops most of a second
+    /// of queued speech, and invalidates the server-side voice clone.
+    private static let inboundTimeout: TimeInterval = 40
 
     /// How often the idle check runs. Well under `inboundTimeout` so the
     /// detection latency is bounded by the timeout rather than by the tick.
@@ -268,9 +360,23 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         let text: String
         let task: URLSessionWebSocketTask
         let generation: Int
-        let isAudio: Bool
+        /// PCM bytes this message carries, 0 for anything that is not audio.
+        /// The encoded frame is a third larger and JSON-wrapped, so it cannot
+        /// stand in for the duration the budget is really about.
+        let audioBytes: Int
+
+        var isAudio: Bool { audioBytes > 0 }
     }
-    private static let outboundAudioLimit = 10
+    /// How much audio may sit queued behind a slow send before the oldest is
+    /// dropped.
+    ///
+    /// Expressed in bytes rather than in messages because the caller chooses
+    /// the chunk size: counting messages made the real tolerance a second of
+    /// speech at 100 ms chunks and four tenths at 40 ms, so shortening the
+    /// chunks to cut latency would have quietly shortened the network
+    /// tolerance too. One second at 16 kHz mono Int16 is the same second
+    /// either way.
+    private static let outboundAudioBudget = 32_000
     private let outboundQueue = DispatchQueue(label: "call-audio-bridge.outbound")
     private var outboundMessages: [OutboundMessage] = []
     private var outboundHead = 0
@@ -369,6 +475,13 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     private var isClosingNow: Bool {
         lock.lock(); defer { lock.unlock() }
         return isClosing
+    }
+
+    /// The live configuration, read under `lock` because the clone fallback
+    /// can rewrite it from the socket's callback queue mid-session.
+    private var currentConfig: Config {
+        lock.lock(); defer { lock.unlock() }
+        return config
     }
 
     /// Marks the socket unusable, and — unless the caller retired it — asks
@@ -511,13 +624,94 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     private func sweepIfStalled() {
         lock.lock()
         let idle = Date().timeIntervalSince(lastInboundAt)
-        let shouldSweep = task != nil && !isRetired && !isReconnecting
-            && idle >= Self.inboundTimeout
+        // A socket that is gone or dead is the case most in need of the
+        // sweep, not the case to skip: the paths that end a socket without
+        // reopening — a service error, a second failure arriving after
+        // `markDead` already ran, a reconnect refused mid-flight — leave a
+        // session that captures audio, converts it, and streams it nowhere.
+        // Requiring a live task here is what let a dead lane stay dead for a
+        // whole call while every other signal looked healthy.
+        let stranded = task == nil || isDead
+        // `isClosing` covers the `finish()` window, where the caller is
+        // winding the session down but has not retired it yet. Reopening
+        // there would race a new socket against the drain.
+        let shouldSweep = !isRetired && !isClosing && !isReconnecting
+            && (stranded || idle >= Self.inboundTimeout)
         lock.unlock()
         guard shouldSweep else { return }
         scheduleReconnect(
-            reason: "no inbound frame for \(Int(idle))s"
+            reason: stranded
+                ? "socket went away without reopening"
+                : "no inbound frame for \(Int(idle))s"
         )
+    }
+
+    /// Decides what a service `error` frame means for the session.
+    ///
+    /// The service reports fatal and transient conditions through the same
+    /// event, and the socket is closed underneath either way. Reporting every
+    /// one as `.failed` retires the whole session at the UI, which is how a
+    /// single recoverable 400 used to end subtitling for the rest of a call
+    /// while audio capture carried on feeding a socket nobody would reopen.
+    private func handleServiceError(_ message: String) {
+        // The service clones a voice into its own prefix cache and hands the
+        // clone an ID it makes up. Reopening the socket invalidates the
+        // clone, but the cache can still name it, so the new session opens
+        // against a timbre that no longer exists and fails on every reply.
+        // Retrying cannot clear that — only giving up the clone can.
+        if isMissingClonedVoice(message) {
+            lock.lock()
+            let wasCloning = config.voice.frequency != nil
+            if wasCloning { config = config.withPresetVoice() }
+            lock.unlock()
+            if wasCloning {
+                BridgeLog.socket.error(
+                    "service lost the cloned voice; falling back to the stock voice for the rest of the session"
+                )
+                markDead(reason: "cloned voice unavailable")
+                return
+            }
+        }
+
+        guard isRecoverable(message) else {
+            // Retire it: a bad key or an unreachable model is not going to
+            // resolve itself, and the idle sweep would otherwise keep
+            // reopening the socket to collect the same rejection forever.
+            onEvent?(.failed(message))
+            close()
+            return
+        }
+
+        BridgeLog.socket.notice(
+            "service error is recoverable; reopening rather than failing the session"
+        )
+        markDead(reason: "service error: \(message)")
+    }
+
+    /// Whether the service is rejecting a cloned voice it can no longer find.
+    private func isMissingClonedVoice(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        return lowered.contains("voice")
+            && (lowered.contains("could not be found")
+                || lowered.contains("not found"))
+    }
+
+    /// Whether reopening the socket stands a chance of clearing the error.
+    ///
+    /// Deliberately a denylist of the conditions a reconnect cannot fix —
+    /// bad credentials, a model the account cannot reach, exhausted quota.
+    /// Anything else is treated as transient, because the cost of retrying a
+    /// genuinely fatal error is a bounded backoff loop, while the cost of
+    /// giving up on a transient one is the rest of the call.
+    private func isRecoverable(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        let fatal = [
+            "invalidapikey", "invalid api key", "unauthorized", "forbidden",
+            "authenticationerror", "accessdenied", "permissiondenied",
+            "model not found", "modelnotfound", "invalidaccesskeyid",
+            "arrearage", "quota", "insufficient",
+        ]
+        return !fatal.contains { lowered.contains($0) }
     }
 
     private func startSweepTimer() {
@@ -619,10 +813,17 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     // MARK: - sending
 
     private func sendSessionUpdate() {
+        let config = currentConfig
         let sessionConfig = config.sessionUpdate
         let keys = sessionConfig.keys.sorted().joined(separator: ",")
         BridgeLog.socket.notice(
             "session.update \(config.modelID, privacy: .public) sending keys: \(keys, privacy: .public)"
+        )
+        // Named on its own line because it is the one setting whose effect
+        // the user feels on every subtitle, and the one most worth checking
+        // against what `session.updated` echoes back.
+        BridgeLog.socket.notice(
+            "segmentation: silence \(config.segmentation.silenceDuration, privacy: .public) ms, threshold \(String(format: "%.2f", config.segmentation.threshold), privacy: .public)"
         )
         send(["type": "session.update", "session": sessionConfig])
     }
@@ -697,7 +898,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         send([
             "type": "input_audio_buffer.append",
             "audio": pcm.base64EncodedString(),
-        ], isAudio: true)
+        ], audioBytes: pcm.count)
     }
 
     private func flushPendingAudio() {
@@ -709,7 +910,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         for chunk in queued { appendAudio(chunk) }
     }
 
-    private func send(_ payload: [String: Any], isAudio: Bool = false) {
+    private func send(_ payload: [String: Any], audioBytes: Int = 0) {
         lock.lock()
         let task = self.task
         let generation = self.generation
@@ -718,17 +919,24 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
               let data = try? JSONSerialization.data(withJSONObject: payload),
               let text = String(data: data, encoding: .utf8) else { return }
         let message = OutboundMessage(
-            text: text, task: task, generation: generation, isAudio: isAudio
+            text: text, task: task, generation: generation,
+            audioBytes: audioBytes
         )
         outboundQueue.async { [weak self] in
             guard let self else { return }
-            if isAudio {
+            if audioBytes > 0 {
+                // The in-flight message is excluded: it is already with the
+                // socket and cannot be taken back.
                 let start = self.outboundHead + (self.outboundInFlight ? 1 : 0)
-                let queuedAudio = self.outboundMessages[start...]
-                    .lazy.filter(\.isAudio).count
-                if queuedAudio >= Self.outboundAudioLimit {
+                var queued = self.outboundMessages[start...]
+                    .reduce(0) { $0 + $1.audioBytes }
+                // Drop from the front until the new chunk fits. Oldest first,
+                // because on a backlog the stale audio is the part nobody is
+                // waiting for any more.
+                while queued + audioBytes > Self.outboundAudioBudget {
                     guard let stale = self.outboundMessages[start...]
-                        .firstIndex(where: \.isAudio) else { return }
+                        .firstIndex(where: \.isAudio) else { break }
+                    queued -= self.outboundMessages[stale].audioBytes
                     self.outboundMessages.remove(at: stale)
                 }
             }
@@ -858,12 +1066,34 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             )
 
         case "session.updated":
-            if config.voice.frequency != nil {
+            if currentConfig.voice.frequency != nil {
                 let session = event["session"] as? [String: Any]
                 let accepted = session?["enable_voice_clone"] as? Bool == true
+                // Deliberately not called "confirmed": this is the service
+                // echoing the field back, which it does even when the timbre
+                // it would speak with no longer exists. The clone is only
+                // really known to work once a reply is spoken in it.
                 BridgeLog.socket.notice(
-                    "voice clone \(accepted ? "confirmed" : "not confirmed", privacy: .public) by session.updated"
+                    "voice clone \(accepted ? "requested and echoed back" : "not echoed back", privacy: .public) by session.updated"
                 )
+            }
+            // A `turn_detection` the service silently ignored looks exactly
+            // like one it applied: the only difference is a second of extra
+            // lag per line, which nobody can attribute without this line.
+            if let accepted = (event["session"] as? [String: Any])?[
+                "turn_detection"
+            ] as? [String: Any] {
+                let silence = accepted["silence_duration_ms"] as? Int
+                let echoed = silence.map(String.init) ?? "?"
+                let asked = currentConfig.segmentation.silenceDuration
+                BridgeLog.socket.notice(
+                    "segmentation confirmed: silence \(echoed, privacy: .public) ms (asked \(asked, privacy: .public))"
+                )
+                if let silence, silence != asked {
+                    BridgeLog.socket.error(
+                        "service overrode the requested silence window; subtitles will lag by the difference"
+                    )
+                }
             }
             lock.lock()
             isOpen = true
@@ -960,7 +1190,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             let message = (event["error"] as? [String: Any])?["message"] as? String
                 ?? text
             BridgeLog.socket.error("service error: \(message, privacy: .public)")
-            onEvent?(.failed(message))
+            handleServiceError(message)
 
         default:
             // An event the parser does not know is indistinguishable from a
