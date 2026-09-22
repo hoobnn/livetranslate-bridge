@@ -18,6 +18,18 @@ nonisolated public final class CallAudioSession: @unchecked Sendable {
     private let lock = NSLock()
     private var running = false
 
+    /// Where capture is opened when no `CallMonitor` callback is doing it for
+    /// us. Opening a device means `AVAudioEngine.start()` and, on the tap side,
+    /// a round trip to the HAL — hundreds of milliseconds either can take. On
+    /// the call-driven path that already happens on the monitor's own queue;
+    /// this gives the uplink-only path somewhere equivalent to run, instead of
+    /// stalling whichever thread called `start()` (the main actor, in this
+    /// app — which is what produced `NSCGSTransactionCreatedDuringCommitError`
+    /// and a window frozen for the duration).
+    private let captureQueue = DispatchQueue(
+        label: "call-audio-bridge.session", qos: .userInitiated
+    )
+
     /// Whether to open the microphone. Subtitling the far end alone does not
     /// need it, and leaving it shut avoids a permission prompt.
     public var capturesUplink: Bool = true
@@ -94,7 +106,9 @@ nonisolated public final class CallAudioSession: @unchecked Sendable {
     private func startMonitoringOrCapture() {
         guard capturesDownlink else {
             BridgeLog.tap.notice("uplink-only session: capturing without a call")
-            beginCapture(processObjectID: AudioObjectID(kAudioObjectUnknown))
+            captureQueue.async { [weak self] in
+                self?.beginCapture(processObjectID: AudioObjectID(kAudioObjectUnknown))
+            }
             return
         }
         monitor.start()
