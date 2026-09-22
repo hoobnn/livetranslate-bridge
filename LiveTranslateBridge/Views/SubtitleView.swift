@@ -73,6 +73,12 @@ struct SubtitleView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 4)
+                    if let notice = model.audioNotice, model.isRunning {
+                        Label(notice, systemImage: "waveform.badge.exclamationmark")
+                            .font(.App.caption)
+                            .foregroundStyle(Theme.pending)
+                            .padding(.horizontal, 24)
+                    }
                     if case .failed(let message) = model.status, model.entryCount > 0 {
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -148,6 +154,12 @@ struct SubtitleView: View {
 
             AudioRoutingButton(model: model)
 
+            if model.isRunning, model.mode == .translate {
+                Button(t("audio.skipSpeech"), systemImage: "forward.end") {
+                    model.interruptTranslation()
+                }
+                .help(t("audio.skipSpeech.help"))
+            }
             TransportButton(isRunning: model.isRunning) {
                 if model.isRunning { model.stop() } else { model.start() }
             }
@@ -541,6 +553,10 @@ private struct EntryCard: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
 
+        if let status = entry.responseStatus, status != "completed", status != "in_progress" {
+            Label(t("subtitles.responseInterrupted"), systemImage: "exclamationmark.bubble")
+                .font(.App.caption).foregroundStyle(Theme.pending)
+        }
         if drawsTranscript {
             Text(entry.transcript)
                 .font(.system(

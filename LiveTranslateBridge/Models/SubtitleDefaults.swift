@@ -117,6 +117,11 @@ extension SubtitleModel {
             set { store.set(newValue, forKey: remoteOutputKey) }
         }
 
+        static var ducksOriginal: Bool {
+            get { store.bool(forKey: "ducksOriginal") }
+            set { store.set(newValue, forKey: "ducksOriginal") }
+        }
+
         static var remoteOriginalVolume: Double {
             get { storedVolume(remoteOriginalVolumeKey) }
             set { store.set(newValue, forKey: remoteOriginalVolumeKey) }
@@ -141,12 +146,10 @@ extension SubtitleModel {
         /// language pair: whoever tuned it once for their own calls is
         /// running the same kind of call next launch.
         ///
-        /// The fallback is the app's own responsive setting rather than the
-        /// service's, because the service's is a second of lag on every line
-        /// and nobody chose it.
+        /// Prefer sentence continuity by default; preserve explicit tuning.
         static var segmentation: TranslationClient.Config.Segmentation {
             get {
-                let fallback = TranslationClient.Config.Segmentation.responsive
+                let fallback = TranslationClient.Config.Segmentation.serviceDefault
                 let silence = store.object(forKey: silenceDurationKey) as? Int
                     ?? fallback.silenceDuration
                 let threshold = store.object(forKey: vadThresholdKey) as? Double

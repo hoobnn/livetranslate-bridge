@@ -18,12 +18,16 @@ struct TranslationVoiceConfigTests {
               sourceLanguage: "en", wantsAudio: wantsAudio, voice: voice)
     }
 
-    @Test func selectedAppCloneUsesTheLegacyModelAndPerReplyVoice() {
+    @Test func selectedAppCloneKeepsQwen38AndPerReplyVoice() {
         let selected = config(wantsAudio: true, voice: .cloneEachReply)
         let session = selected.sessionUpdate
-        #expect(selected.modelID == TranslationClient.voiceCloneModel)
-        #expect(session["modalities"] as? [String] == ["text", "audio"])
-        #expect(session["output_modalities"] == nil)
+        #expect(selected.modelID == TranslationClient.model)
+        #expect(session["output_modalities"] as? [String] == ["text", "audio"])
+        #expect(session["modalities"] == nil)
+        #expect(session["turn_detection"] == nil)
+        #expect(session["input_audio_transcription"] == nil)
+        let audio = session["audio"] as? [String: Any]
+        #expect((audio?["output"] as? [String: String])?["voice"] == "default")
         #expect(session["enable_voice_clone"] as? Bool == true)
         #expect(session["voice"] as? String == "default")
         #expect((session["voice_clone_options"] as? [String: String])?["frequency"]
@@ -1399,25 +1403,34 @@ struct SegmentationConfigTests {
     private func turnDetection(
         _ config: TranslationClient.Config
     ) -> [String: Any]? {
-        config.sessionUpdate["turn_detection"] as? [String: Any]
+        let session = config.sessionUpdate
+        if let legacy = session["turn_detection"] as? [String: Any] { return legacy }
+        let audio = session["audio"] as? [String: Any]
+        return (audio?["input"] as? [String: Any])?["turn_detection"] as? [String: Any]
     }
 
-    @Test func theRequestedWindowReachesBothSchemas() {
+    @Test func allVoiceModesUseQwen38SpeakerDetection() {
         let current = config(segmentation: .responsive)
         #expect(current.modelID == TranslationClient.model)
-        #expect(turnDetection(current)?["type"] as? String == "server_vad")
-        #expect(turnDetection(current)?["silence_duration_ms"] as? Int == 400)
+        #expect(turnDetection(current)?["type"] as? String == "speaker_detection")
+        #expect(turnDetection(current)?["threshold"] as? Double == 0.5)
+        #expect(current.sessionUpdate["turn_detection"] == nil)
+        #expect(current.sessionUpdate["input_audio_transcription"] == nil)
+        #expect(turnDetection(current)?["silence_duration_ms"] == nil)
 
         // The clone path builds a different session object entirely, so it
         // is its own chance to drop the field.
         let cloning = config(segmentation: .responsive, voice: .cloneOnce)
-        #expect(cloning.modelID == TranslationClient.voiceCloneModel)
-        #expect(turnDetection(cloning)?["silence_duration_ms"] as? Int == 400)
+        #expect(cloning.modelID == TranslationClient.model)
+        #expect(turnDetection(cloning)?["type"] as? String == "speaker_detection")
+        #expect(turnDetection(cloning)?["silence_duration_ms"] == nil)
     }
 
-    @Test func theDefaultIsShorterThanTheServiceWouldWaitOnItsOwn() {
-        #expect(TranslationClient.Config.Segmentation.responsive.silenceDuration
-                < TranslationClient.Config.Segmentation.serviceDefault.silenceDuration)
+    @Test func defaultConfigPreservesServicePauseWindow() {
+        let current = TranslationClient.Config(apiKey: "test", workspaceID: "test", targetLanguage: "zh")
+        #expect(turnDetection(current)?["type"] as? String == "speaker_detection")
+        #expect(turnDetection(config(segmentation: .serviceDefault, voice: .cloneOnce))?["type"] as? String == "speaker_detection")
+        #expect(turnDetection(config(segmentation: .listening, voice: .cloneOnce))?["silence_duration_ms"] == nil)
     }
 
     @Test func valuesOutsideTheServicesRangeAreClampedNotSent() {
@@ -1438,6 +1451,7 @@ struct SegmentationConfigTests {
         await MainActor.run {
             SubtitleModel.withTemporaryDefaults {
                 let model = SubtitleModel()
+                #expect(model.silenceDurationMS == 1000)
                 model.silenceDurationMS = 300
                 model.vadThreshold = 0.1
                 #expect(model.segmentation.silenceDuration == 300)
@@ -1446,7 +1460,7 @@ struct SegmentationConfigTests {
 
                 model.resetSegmentationToDefault()
                 #expect(model.usesDefaultSegmentation)
-                #expect(model.segmentation == .responsive)
+                #expect(model.segmentation == .serviceDefault)
             }
         }
     }

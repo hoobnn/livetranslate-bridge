@@ -381,7 +381,7 @@ final class DiagnosticsModel {
     }
 
     private func appendFileEvent(_ event: TranslationClient.Event) {
-        switch event {
+        switch event.payload {
         case .transcriptComplete(let text):
             if !text.isEmpty { fileLines.append(FileLine(kind: .source, text: text)) }
         case .translationComplete(let text):

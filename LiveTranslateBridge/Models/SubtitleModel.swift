@@ -176,6 +176,11 @@ final class SubtitleModel {
         var transcript: String = ""
         var translation: String = ""
         var isComplete = false
+        var sourceComplete = false
+        var translationComplete = false
+        var responseStatus: String?
+        var speechStartMS: Int?
+        var speechEndMS: Int?
 
         /// When the utterance opened, not when it closed: what a reader
         /// scanning the board wants is when someone started speaking, and it
@@ -398,6 +403,10 @@ final class SubtitleModel {
     /// here instead would register an observable read inside the write that
     /// SwiftUI is still performing, and the slider's next render would write
     /// again — an invalidation loop that hangs the window on first layout.
+    var ducksOriginal = Defaults.ducksOriginal {
+        didSet { Defaults.ducksOriginal = ducksOriginal }
+    }
+
     var remoteOriginalVolume = Defaults.remoteOriginalVolume {
         didSet {
             let gain = Self.clampedVolume(remoteOriginalVolume)
@@ -674,14 +683,14 @@ final class SubtitleModel {
     /// Whether the two are already where a fresh install starts, so the
     /// settings pane can say there is nothing to undo.
     var usesDefaultSegmentation: Bool {
-        segmentation == .responsive
+        segmentation == .serviceDefault
     }
 
     func resetSegmentationToDefault() {
         silenceDurationMS = TranslationClient.Config.Segmentation
-            .responsive.silenceDuration
+            .serviceDefault.silenceDuration
         vadThreshold = TranslationClient.Config.Segmentation
-            .responsive.threshold
+            .serviceDefault.threshold
     }
 
     /// Translating a language into itself would echo the speaker back at
@@ -714,15 +723,52 @@ final class SubtitleModel {
 
 
     /// Whether this session replays the far end's original through our mixer,
-    /// which is also what decided that the source app was muted. Pinned at
-    /// start because a tap's mute behaviour cannot be changed afterwards.
+    /// which is also what decided that the source app was muted. Route
+    /// ownership is pinned at start independently of the current gain.
     /// `true` outside a session so a slider moved before Start is honoured.
     @ObservationIgnored private var replaysRemoteOriginal = true
 
     private var session: CallAudioSession?
+    @ObservationIgnored private var serverEntries: [String: Entry] = [:]
+    @ObservationIgnored private var serverAliases: [String: String] = [:]
+    @ObservationIgnored private var serverResponses: [String: Set<String>] = [:]
+    @ObservationIgnored private var serverResponseStatus: [String: String] = [:]
+    @ObservationIgnored private var retiredServerItems = Set<String>()
+    @ObservationIgnored private var retiredServerOrder: [String] = []
     private var clients: [Direction: TranslationClient] = [:]
     @ObservationIgnored private var eventBatchers: [Direction: TranslationEventBatcher] = [:]
     @ObservationIgnored private var startupTask: Task<Void, Never>?
+    @ObservationIgnored private var routeTask: Task<Void, Never>?
+    @ObservationIgnored private var sessionGeneration = 0
+    var audioNotice: String?
+
+    func interruptTranslation() {
+        remotePlaybackPath.interrupt()
+        localPlaybackPath.interrupt()
+    }
+
+    private func watchRoutes() {
+        guard routeTask == nil else { return }
+        let input = scope.captures(.local) ? inputDeviceUID : nil
+        let remote = scope.captures(.remote) ? remoteOutputDeviceUID : nil
+        let local = scope.captures(.local) && !outputDeviceUID.isEmpty ? outputDeviceUID : nil
+        routeTask = Task { [weak self] in
+            var previous: AudioRouteSnapshot?
+            while !Task.isCancelled {
+                let snapshot = await Task.detached(priority: .utility) {
+                    AudioRouteSnapshot.read(inputUID: input, remoteUID: remote, localUID: local)
+                }.value
+                guard !Task.isCancelled, let self, self.isRunning else { return }
+                if let previous, previous != snapshot {
+                    BridgeLog.audio.notice("selected audio endpoint changed; rebuilding routes")
+                    self.stop(preserveRouteWatcher: true)
+                    self.start(preserveTranscript: true)
+                }
+                previous = snapshot
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+    }
     private let remotePlaybackPath = TranslationPlaybackPath()
     private let localPlaybackPath = TranslationPlaybackPath()
 
@@ -735,7 +781,7 @@ final class SubtitleModel {
 
     // MARK: - lifecycle
 
-    func start() {
+    func start(preserveTranscript: Bool = false) {
         guard !isRunning else { return }
         guard #available(macOS 14.2, *) else {
             status = .failed(StartFailure.unsupportedSystem.message)
@@ -750,7 +796,10 @@ final class SubtitleModel {
         }
 
         isRunning = true
+        sessionGeneration &+= 1
+        audioNotice = nil
         status = .connecting
+        watchRoutes()
         // Pinned for the session's lifetime. The picker is disabled while
         // running, but the entries already on the board were produced under
         // the mode that was current when they arrived, and the view reads this
@@ -768,23 +817,25 @@ final class SubtitleModel {
             let prepared = await Task.detached(priority: .userInitiated) {
                 (
                     CredentialStore.load(),
-                    AudioInputDevice.named(uid: inputUID),
+                    inputUID.isEmpty ? AudioInputDevice.systemDefault : AudioInputDevice.named(uid: inputUID),
                     AudioOutputDevice.named(uid: outputUID),
-                    AudioOutputDevice.named(uid: remoteOutputUID)
+                    remoteOutputUID.isEmpty ? AudioOutputDevice.systemDefault : AudioOutputDevice.named(uid: remoteOutputUID)
                 )
             }.value
             guard !Task.isCancelled, let self, self.isRunning else { return }
-            self.startupTask = nil
             guard prepared.0.isComplete else {
                 self.isRunning = false
+                self.routeTask?.cancel()
+                self.routeTask = nil
                 self.status = .failed(StartFailure.missingCredentials.message)
                 return
             }
-            self.startPrepared(
+            await self.startPrepared(
                 credentials: prepared.0,
                 inputDevice: prepared.1,
                 localOutputDevice: prepared.2,
-                remoteOutputDevice: prepared.3
+                remoteOutputDevice: prepared.3,
+                preserveTranscript: preserveTranscript
             )
         }
     }
@@ -793,12 +844,33 @@ final class SubtitleModel {
         credentials: CredentialStore.Credentials,
         inputDevice: AudioInputDevice?,
         localOutputDevice: AudioOutputDevice?,
-        remoteOutputDevice: AudioOutputDevice?
-    ) {
+        remoteOutputDevice: AudioOutputDevice?,
+        preserveTranscript: Bool = false
+    ) async {
         guard isRunning else { return }
-        entries.removeAll()
-        archivedEntries.removeAll()
-        liveEntries.removeAll()
+        if !preserveTranscript { clearEntries() }
+        if scope.captures(.local) {
+            guard !AudioRoutePolicy.missingExplicitInput(uid: inputDeviceUID, resolved: inputDevice) else {
+                status = .failed(t("audio.inputMissing"))
+                return
+            }
+            let actualInput = inputDevice
+            let actualRemote = remoteOutputDevice
+            guard !AudioRoutePolicy.feedsOwnOutput(inputUID: actualInput?.uid,
+                inputIsLoopback: actualInput?.isKnownLoopback == true,
+                localUID: outputDeviceUID,
+                remoteUID: scope.captures(.remote) ? actualRemote?.uid : nil) else {
+                status = .failed(t("audio.feedbackRoute"))
+                return
+            }
+        }
+        if scope.captures(.remote), !remoteOutputDeviceUID.isEmpty, remoteOutputDevice == nil {
+            status = .failed(t("audio.outputMissing"))
+            return
+        }
+        if scope.captures(.local), !outputDeviceUID.isEmpty, localOutputDevice == nil {
+            audioNotice = t("audio.outputMissing")
+        }
 
         // A socket is opened only for a side that is actually captured. The
         // unused one is not merely left idle: an open session with no audio
@@ -809,24 +881,28 @@ final class SubtitleModel {
         // Transcribing, nothing is rendered into anything — the target is
         // dropped and the same socket returns only the transcript, still with
         // its source language pinned so ASR knows what it is hearing.
-        let remoteRouteReady = scope.captures(.remote) && startPlayer(
-            direction: .remote,
-            device: remoteOutputDevice,
-            originalVolume: remoteOriginalVolume,
-            translationVolume: remoteTranslationVolume
-        )
-        let localRouteReady = scope.captures(.local) && !outputDeviceUID.isEmpty
-            && localOutputDevice != nil
-            && startPlayer(
-                direction: .local,
-                device: localOutputDevice,
-                originalVolume: localOriginalVolume,
-                translationVolume: localTranslationVolume
+        let generationAtStart = sessionGeneration
+        let remoteRouteReady: Bool
+        if scope.captures(.remote) {
+            remoteRouteReady = await startPlayer(
+                direction: .remote, device: remoteOutputDevice,
+                originalVolume: remoteOriginalVolume,
+                translationVolume: remoteTranslationVolume
             )
+        } else { remoteRouteReady = false }
+        guard isRunning, sessionGeneration == generationAtStart, !Task.isCancelled else { return }
+        let localRouteReady: Bool
+        if scope.captures(.local), !outputDeviceUID.isEmpty, localOutputDevice != nil {
+            localRouteReady = await startPlayer(
+                direction: .local, device: localOutputDevice,
+                originalVolume: localOriginalVolume, translationVolume: localTranslationVolume
+            )
+        } else { localRouteReady = false }
+        guard isRunning, sessionGeneration == generationAtStart, !Task.isCancelled else { return }
+        startupTask = nil
 
         if scope.captures(.remote) {
             let wantsAudio = translates && remoteRouteReady
-                && remoteTranslationVolume > 0
             let downlink = makeClient(
                 direction: .remote,
                 credentials: credentials,
@@ -845,7 +921,7 @@ final class SubtitleModel {
         // never while transcribing — there is no translation to speak — and
         // never when our own side is not captured in the first place.
         if scope.captures(.local) {
-            let wantsAudio = speaksTranslation && localRouteReady
+            let wantsAudio = translates && localRouteReady
             let uplink = makeClient(
                 direction: .local,
                 credentials: credentials,
@@ -866,17 +942,9 @@ final class SubtitleModel {
         session.capturesUplink = scope.captures(.local)
         session.capturesDownlink = scope.captures(.remote)
         session.uplinkDevice = inputDevice
-        // Muting the source app is only justified while we are actually
-        // replaying its original through our mixer. Starting at zero original
-        // gain we replay nothing, so muting it too would leave the user with
-        // silence and no way back — there the app keeps its own direct route
-        // and the tap only listens in.
-        //
-        // A tap's mute behaviour is fixed when it is created, so this is
-        // pinned for the session and recorded: the original lane has to stay
-        // silent for the rest of it, or raising the slider would stack our
-        // replay on top of the app's own audio.
-        replaysRemoteOriginal = remoteRouteReady && gains.remoteOriginal > 0
+        // Route ownership is independent of gain: zero must really mute.
+        // If playback could not open, leave the source application's route intact.
+        replaysRemoteOriginal = remoteRouteReady
         session.mutesDownlinkSource = replaysRemoteOriginal
         session.onDownlink = { [weak self] buffer in
             self?.forward(tapBuffer: buffer)
@@ -884,11 +952,18 @@ final class SubtitleModel {
         session.onUplink = { [weak self] buffer in
             self?.forward(micBuffer: buffer)
         }
+        let generation = sessionGeneration
         session.onStateChange = { [weak self] state in
-            Task { @MainActor [weak self] in self?.apply(callState: state) }
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning, self.sessionGeneration == generation else { return }
+                self.apply(callState: state)
+            }
         }
         session.onError = { [weak self] error in
-            Task { @MainActor [weak self] in self?.status = .failed("\(error)") }
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning, self.sessionGeneration == generation else { return }
+                self.status = .failed("\(error)")
+            }
         }
         self.session = session
         session.start()
@@ -904,22 +979,39 @@ final class SubtitleModel {
         device: AudioOutputDevice?,
         originalVolume: Double,
         translationVolume: Double
-    ) -> Bool {
+    ) async -> Bool {
         let player = TranslationPlayer()
+        let generation = sessionGeneration
+        let shouldDuck = direction == .remote && ducksOriginal
+        player.onWarning = { [weak self] message in
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning, self.sessionGeneration == generation else { return }
+                self.audioNotice = t(message)
+            }
+        }
         if direction == .local {
             player.onPlaybackChange = { [weak self] speaking in
-                Task { @MainActor [weak self] in self?.isSpeaking = speaking }
+                Task { @MainActor [weak self] in
+                    guard let self, self.isRunning, self.sessionGeneration == generation else { return }
+                    self.isSpeaking = speaking
+                }
             }
         }
         do {
-            try player.start(
-                device: device,
-                originalVolume: Float(originalVolume),
-                translationVolume: Float(translationVolume)
-            )
+            try await Task.detached(priority: .userInitiated) {
+                try player.start(device: device, originalVolume: Float(originalVolume),
+                    translationVolume: Float(translationVolume), ducksOriginal: shouldDuck)
+            }.value
+            guard isRunning, sessionGeneration == generation, !Task.isCancelled else {
+                player.stop()
+                return false
+            }
             playbackPath(for: direction).install(player)
+            if direction == .remote { applyRemoteVolumes() } else { applyLocalVolumes() }
             return true
         } catch {
+            guard isRunning, sessionGeneration == generation, !Task.isCancelled else { return false }
+            audioNotice = t("audio.outputUnavailable")
             BridgeLog.audio.error(
                 "translation playback unavailable: \("\(error)", privacy: .public)"
             )
@@ -928,8 +1020,13 @@ final class SubtitleModel {
         }
     }
 
-    func stop() {
+    func stop(preserveRouteWatcher: Bool = false) {
+        if !preserveRouteWatcher { routeTask?.cancel(); routeTask = nil }
+        sessionGeneration &+= 1
         guard isRunning else { return }
+        finishServerEntries(.remote, status: "interrupted")
+        finishServerEntries(.local, status: "interrupted")
+        if preserveRouteWatcher { seal(.remote); seal(.local) }
         isRunning = false
         startupTask?.cancel()
         startupTask = nil
@@ -953,6 +1050,9 @@ final class SubtitleModel {
     /// Empties the board without touching the session, so a long call can be
     /// cleared down to the part worth reading.
     func clearEntries() {
+        serverEntries.removeAll(); serverAliases.removeAll()
+        serverResponses.removeAll(); serverResponseStatus.removeAll()
+        retiredServerItems.removeAll(); retiredServerOrder.removeAll()
         entries.removeAll()
         archivedEntries.removeAll()
         liveEntries.removeAll()
@@ -1061,16 +1161,21 @@ final class SubtitleModel {
             voice: voice,
             segmentation: segmentation
         )
-        let client = TranslationClient(config: config)
+        let client = TranslationClient(config: config, diagnosticLabel: direction.rawValue)
+        let generation = sessionGeneration
+        let playback = playbackPath(for: direction)
+        let playbackToken = playback.token
         let batcher = TranslationEventBatcher(
             label: "app.livetranslate.events.\(direction.rawValue)"
         ) { [weak self] events in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.isRunning, self.sessionGeneration == generation else { return }
                 for event in events { self.handle(event, from: direction) }
             }
-        } deliverAudio: { [weak self] data in
-            self?.playbackPath(for: direction).enqueue(data)
+        } deliverAudio: { [weak playback] data in
+            playback?.enqueue(data, token: playbackToken)
+        } audioEvent: { [weak playback] event in
+            playback?.audioEvent(event, token: playbackToken)
         }
         eventBatchers[direction] = batcher
         client.onEvent = { [weak batcher] event in batcher?.submit(event) }
@@ -1085,6 +1190,12 @@ final class SubtitleModel {
 
     private func handle(_ event: TranslationClient.Event, from direction: Direction) {
         switch event {
+        case .identified(let identity, let payload):
+            handleServerEvent(payload, identity: identity, direction: direction)
+        case .streamStarted:
+            finishServerEntries(direction, status: "interrupted")
+        case .itemLinked, .responseFinished, .responseOpened:
+            break
         case .sessionReady:
             // The socket is up; what it is now waiting for depends on whether
             // this session needs a call. Capturing our own side alone does
@@ -1126,8 +1237,9 @@ final class SubtitleModel {
         case .failed(let message):
             status = .failed(message)
         case .finished:
+            finishServerEntries(direction, status: "interrupted")
             seal(direction)
-        case .speechStarted, .speechStopped:
+        case .speechStarted, .speechStopped, .audioComplete:
             break
         }
     }
@@ -1315,6 +1427,7 @@ final class SubtitleModel {
             )
         })
         entries.removeFirst(completedPrefix.count)
+        pruneServerEntries()
         repairRunFlags(at: 0)
     }
 
@@ -1329,5 +1442,135 @@ final class SubtitleModel {
         let previous = entries[index - 1].direction
         entries[index].continuesRun = previous == entries[index].direction
         entries[index].startsNewSpeaker = previous != entries[index].direction
+    }
+}
+
+
+extension SubtitleModel {
+    /// The source item owns the card. Output items are aliases established only
+    /// by a type-verified previous_item_id link, never by arrival order.
+    private func handleServerEvent(_ event: TranslationClient.Event,
+        identity: TranslationClient.EventIdentity, direction: Direction) {
+        let prefix = direction.rawValue + "/" + identity.streamID
+        func itemKey(_ id: String) -> String { prefix + "/item/" + id }
+        let responseKey = identity.responseID.map { prefix + "/response/" + $0 }
+
+        if case .itemLinked(let output, let source) = event {
+            let outputKey = itemKey(output), sourceKey = itemKey(source)
+            guard !retiredServerItems.contains(sourceKey), !retiredServerItems.contains(outputKey) else { return }
+            let old = serverEntries[outputKey]
+            let target = serverEntry(sourceKey, direction: direction)
+            if let old, old !== target {
+                if !old.translation.isEmpty { target.translation = old.translation }
+                target.translationComplete = target.translationComplete || old.translationComplete
+                if let status = old.responseStatus { target.responseStatus = status }
+                serverEntries.removeValue(forKey: outputKey)
+                entries.removeAll { $0 === old }
+                for index in entries.indices { repairRunFlags(at: index) }
+            }
+            serverAliases[outputKey] = sourceKey
+            updateServerCompletion(target)
+            noteLiveTextChanged()
+            return
+        }
+
+        if case .responseFinished(let status) = event, identity.itemID == nil {
+            guard let responseKey else { return }
+            serverResponseStatus[responseKey] = status
+            for key in serverResponses[responseKey] ?? [] {
+                guard let entry = serverEntries[serverAliases[key] ?? key] else { continue }
+                entry.responseStatus = status
+                updateServerCompletion(entry)
+            }
+            // Bound orphan responses from incomplete/malformed streams.
+            if serverResponseStatus.count > 2048 {
+                serverResponseStatus = serverResponseStatus.filter { serverResponses[$0.key] != nil }
+            }
+            trimResidentEntries()
+            return
+        }
+
+        guard let itemID = identity.itemID else { return }
+        let rawKey = itemKey(itemID)
+        let key = serverAliases[rawKey] ?? rawKey
+        guard !retiredServerItems.contains(key), !retiredServerItems.contains(rawKey) else { return }
+        // Audio is routed before main-actor batching; it must not create cards.
+        if case .audio = event { return }
+        if case .audioComplete = event { return }
+        let entry = serverEntry(key, direction: direction)
+        if let responseKey {
+            serverResponses[responseKey, default: []].insert(rawKey)
+            if let status = serverResponseStatus[responseKey] { entry.responseStatus = status }
+        }
+        switch event {
+        case .speechStarted: entry.speechStartMS = identity.audioMS
+        case .speechStopped: entry.speechEndMS = identity.audioMS
+        case .transcript(let text):
+            if !entry.sourceComplete { entry.transcript = text }
+        case .transcriptDelta(let text):
+            if !entry.sourceComplete { entry.transcript += text }
+        case .transcriptComplete(let text):
+            if !text.isEmpty { entry.transcript = text }
+            entry.sourceComplete = true
+        case .translation(let text):
+            if !entry.translationComplete { entry.translation = text }
+        case .translationDelta(let text):
+            if !entry.translationComplete { entry.translation += text }
+        case .translationComplete(let text):
+            if !text.isEmpty { entry.translation = text }
+            entry.translationComplete = true
+        case .responseFinished(let status): entry.responseStatus = status
+        case .failed(let message):
+            entry.sourceComplete = true
+            entry.responseStatus = "failed"
+            audioNotice = message
+        default: break
+        }
+        updateServerCompletion(entry)
+        noteLiveTextChanged()
+        trimResidentEntries()
+    }
+
+    private func serverEntry(_ key: String, direction: Direction) -> Entry {
+        if let entry = serverEntries[key] { return entry }
+        let entry = Entry(direction: direction)
+        entries.append(entry)
+        repairRunFlags(at: entries.count - 1)
+        serverEntries[key] = entry
+        return entry
+    }
+
+    private func updateServerCompletion(_ entry: Entry) {
+        entry.isComplete = entry.sourceComplete && (runningMode == .transcribe
+            || entry.translationComplete || entry.responseStatus != nil)
+    }
+
+    private func finishServerEntries(_ direction: Direction, status: String) {
+        for entry in serverEntries.values where entry.direction == direction && !entry.isComplete {
+            entry.isComplete = true
+            // Missing ASR completion/link is not evidence of a cancelled
+            // translation. Only flag actual unfinished translation content.
+            if entry.responseStatus == nil, !entry.translationComplete, !entry.translation.isEmpty {
+                entry.responseStatus = status
+            }
+        }
+    }
+
+    private func pruneServerEntries() {
+        let retained = Set(entries.map(\.id))
+        let expired = serverEntries.filter { !retained.contains($0.value.id) }.map(\.key)
+        for key in expired {
+            serverEntries.removeValue(forKey: key)
+            if retiredServerItems.insert(key).inserted { retiredServerOrder.append(key) }
+        }
+        for (alias, key) in serverAliases where retiredServerItems.contains(key) {
+            serverAliases.removeValue(forKey: alias)
+            if retiredServerItems.insert(alias).inserted { retiredServerOrder.append(alias) }
+        }
+        while retiredServerOrder.count > 4096 { retiredServerItems.remove(retiredServerOrder.removeFirst()) }
+        serverResponses = serverResponses.mapValues { keys in
+            keys.filter { !retiredServerItems.contains($0) }
+        }.filter { !$0.value.isEmpty }
+        serverResponseStatus = serverResponseStatus.filter { serverResponses[$0.key] != nil }
     }
 }

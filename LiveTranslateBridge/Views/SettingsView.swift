@@ -219,87 +219,17 @@ private struct TranslationSettings: View {
 
 // MARK: - segmentation
 
-/// Where an utterance is cut, which is what decides both how fast a line
-/// appears and whether it appears whole.
-///
-/// Exposed rather than fixed because the right answer is the room's, not the
-/// app's: a quiet one-on-one call takes a short window happily, while a
-/// speaker who pauses to think gets cut mid-sentence by the same setting.
+/// qwen3.8 owns segmentation; old VAD preferences are not active controls.
 private struct SegmentationSettings: View {
     @Bindable var model: SubtitleModel
 
-    /// The stops the slider snaps to, in milliseconds. Discrete because the
-    /// difference between 400 and 410 is not one anybody can hear, and a
-    /// continuous slider invites hunting for it.
-    private static let stops = [200.0, 300, 400, 600, 800, 1_000, 1_500, 2_000]
-
     var body: some View {
         Section {
-            parameterRow(t("settings.segmentation.silence"),
-                         value: t("settings.segmentation.silence.value", model.silenceDurationMS),
-                         minimum: t("settings.segmentation.faster"),
-                         maximum: t("settings.segmentation.safer")) {
-                AlignedSlider(value: Binding(
-                    get: { Double(model.silenceDurationMS) },
-                    set: { model.silenceDurationMS = Self.snap($0) }
-                ), range: Self.stops.first!...Self.stops.last!,
-                label: t("settings.segmentation.silence"))
-            }
-
-            parameterRow(t("settings.segmentation.threshold"),
-                         value: String(format: "%.2f", model.vadThreshold),
-                         minimum: t("settings.segmentation.sensitive"),
-                         maximum: t("settings.segmentation.strict")) {
-                AlignedSlider(value: $model.vadThreshold, range: 0.05...0.6,
-                              step: 0.05, label: t("settings.segmentation.threshold"))
-            }
-
-            Button(t("settings.segmentation.reset")) {
-                model.resetSegmentationToDefault()
-            }
-            .disabled(model.usesDefaultSegmentation)
-        } header: {
-            Text(t("settings.segmentation.section"))
-        } footer: {
-            Text(t("settings.segmentation.footer"))
+            Text(t("settings.segmentation.models"))
                 .font(.App.caption)
                 .foregroundStyle(.secondary)
+        } header: {
+            Text(t("settings.segmentation.section"))
         }
-        // A session setting: the window is fixed in the handshake that opens
-        // the socket, so a slider that moved mid-call would report something
-        // the running session is not doing.
-        .disabled(model.isRunning)
-    }
-
-    private func parameterRow<Control: View>(
-        _ title: String, value: String, minimum: String, maximum: String,
-        @ViewBuilder control: () -> Control
-    ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(title)
-                .frame(width: 120, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(minHeight: 24, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(minimum).font(.App.caption).foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
-                    control().frame(maxWidth: .infinity)
-                    Text(maximum).font(.App.caption).foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .leading)
-                }
-                Text(value).font(.App.numeric).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .contain)
-    }
-
-    /// The nearest stop to where the slider was let go.
-    private static func snap(_ value: Double) -> Int {
-        let nearest = stops.min {
-            abs($0 - value) < abs($1 - value)
-        } ?? value
-        return Int(nearest)
     }
 }
