@@ -14,7 +14,7 @@ struct AudioRoutingSettings: View {
         guard model.speaksTranslation else { return false }
         guard let chosen = inputs.first(where: { $0.uid == model.inputDeviceUID })
         else { return true }
-        return chosen.hasOutputStreams
+        return chosen.isKnownLoopback
     }
 
     var body: some View {
@@ -87,7 +87,7 @@ struct AudioRoutingSettings: View {
                     Text(t("ux.device.unavailable")).tag(model.inputDeviceUID)
                 }
                 ForEach(inputs) { device in
-                    Text(device.hasOutputStreams
+                    Text(device.isKnownLoopback
                          ? "\(device.name)  ·  \(t("settings.voice.input.loopback"))"
                          : device.name)
                         .tag(device.uid ?? "")
@@ -128,6 +128,8 @@ struct AudioRoutingSettings: View {
             AudioVolumeRow(title: t("settings.audio.translationVolume"),
                            value: $model.remoteTranslationVolume,
                            disabled: model.mode == .transcribe)
+            Toggle(t("audio.duckOriginal"), isOn: $model.ducksOriginal)
+                .disabled(model.isRunning || model.mode == .transcribe)
         } header: {
             Text(t("settings.audio.remote.section"))
         } footer: {
@@ -181,8 +183,7 @@ struct AudioRoutingSettings: View {
     private var voiceCloneSection: some View {
         Section {
             Toggle(t("settings.voice.clone"), isOn: $model.clonesVoice)
-                .disabled(model.isRunning || model.mode == .transcribe
-                    || !(model.speaksRemoteTranslation || model.speaksTranslation))
+                .disabled(model.isRunning || model.mode == .transcribe)
         } footer: {
             Text(t("settings.voice.clone.footer"))
                 .font(.App.caption)
@@ -193,7 +194,7 @@ struct AudioRoutingSettings: View {
     @ViewBuilder
     private var outputChoices: some View {
         ForEach(outputs) { device in
-            Text(device.hasInputStreams
+            Text(device.isKnownLoopback
                  ? "\(device.name)  ·  \(t("settings.voice.device.loopback"))"
                  : device.name)
                 .tag(device.uid ?? "")

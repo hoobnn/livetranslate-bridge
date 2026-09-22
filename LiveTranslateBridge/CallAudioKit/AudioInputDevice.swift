@@ -15,11 +15,15 @@ nonisolated public struct AudioInputDevice: Identifiable, Hashable, Sendable {
     public let name: String
     public let uid: String?
 
-    /// Whether this device also presents output streams. Loopback devices do;
-    /// a real microphone does not. Capturing one of these is what causes the
-    /// feedback loop described above, so the UI marks them as a warning rather
-    /// than a recommendation — the inverse of `AudioOutputDevice`.
+    /// Duplex capability alone does not identify loopback: headsets and USB
+    /// interfaces can also expose both input and output streams.
     public let hasOutputStreams: Bool
+
+    /// Duplex hardware is not necessarily a virtual loopback device.
+    public var isKnownLoopback: Bool {
+        let label = (name + " " + (uid ?? "")).lowercased()
+        return ["blackhole", "loopback", "soundflower"].contains { label.contains($0) }
+    }
 
     /// Every device that can record, in the order Core Audio lists them.
     public static func inputs() -> [AudioInputDevice] {
@@ -42,8 +46,8 @@ nonisolated public struct AudioInputDevice: Identifiable, Hashable, Sendable {
     }
 
     /// Resolves a stored UID back to a live device. A saved choice is a UID
-    /// because devices come and go; a missing one falls back to the system
-    /// default rather than failing the session.
+    /// because devices come and go. Nil means unresolved; the caller must
+    /// distinguish an empty preference from a disconnected explicit device.
     public static func named(uid: String?) -> AudioInputDevice? {
         guard let uid, !uid.isEmpty else { return nil }
         return inputs().first { $0.uid == uid }

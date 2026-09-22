@@ -21,6 +21,8 @@ nonisolated final class RealtimeAudioQueue: @unchecked Sendable {
             byteCount: RealtimeAudioQueue.slotBytes,
             alignment: MemoryLayout<Float>.alignment
         )
+        var epoch = 0
+        var enqueuedAt: UInt64 = 0
         var sampleRate: Double = 0
         var channelCount = 0
         var frameCount = 0
@@ -33,17 +35,21 @@ nonisolated final class RealtimeAudioQueue: @unchecked Sendable {
     private let readIndex = Atomic<Int>(0)
     private let writeIndex = Atomic<Int>(0)
     private let dropped = Atomic<Int>(0)
+    private let epoch = Atomic<Int>(0)
     private let workerQueue: DispatchQueue
     private let source: DispatchSourceUserDataAdd
+    private let maximumAge: UInt64
     private let handler: Handler
     private let dropHandler: DropHandler
     private var stagingBuffer: AVAudioPCMBuffer?
 
     init(
         label: String,
+        maximumAge: Double = 0.5,
         handler: @escaping Handler,
         onDrop: @escaping DropHandler
     ) {
+        self.maximumAge = UInt64(maximumAge * 1_000_000_000)
         self.handler = handler
         self.dropHandler = onDrop
         let queue = DispatchQueue(label: label, qos: .userInitiated)
@@ -57,6 +63,8 @@ nonisolated final class RealtimeAudioQueue: @unchecked Sendable {
         source.setEventHandler {}
         source.cancel()
     }
+
+    func invalidate() { _ = epoch.wrappingAdd(1, ordering: .acquiringAndReleasing) }
 
     /// Runs lifecycle work on the same serial queue as conversion.
     func perform(_ work: @escaping @Sendable () -> Void) {
@@ -122,6 +130,7 @@ nonisolated final class RealtimeAudioQueue: @unchecked Sendable {
         sampleCount: Int,
         copy: (UnsafeMutableRawPointer) -> Void
     ) {
+        let producerEpoch = epoch.load(ordering: .acquiring)
         let byteCount = sampleCount * MemoryLayout<Float>.size
         guard sampleRate > 0, channelCount > 0, frameCount > 0,
               byteCount <= Self.slotBytes else {
@@ -138,6 +147,8 @@ nonisolated final class RealtimeAudioQueue: @unchecked Sendable {
 
         let slot = slots[write]
         copy(slot.storage)
+        slot.epoch = producerEpoch
+        slot.enqueuedAt = DispatchTime.now().uptimeNanoseconds
         slot.sampleRate = sampleRate
         slot.channelCount = channelCount
         slot.frameCount = frameCount
@@ -159,7 +170,12 @@ nonisolated final class RealtimeAudioQueue: @unchecked Sendable {
         let write = writeIndex.load(ordering: .acquiring)
         while read != write {
             let slot = slots[read]
-            if let buffer = makeBuffer(from: slot) { handler(buffer) }
+            if slot.epoch == epoch.load(ordering: .acquiring),
+               DispatchTime.now().uptimeNanoseconds - slot.enqueuedAt <= maximumAge {
+                if let buffer = makeBuffer(from: slot) { handler(buffer) }
+            } else {
+                dropHandler(1)
+            }
             read = (read + 1) % Self.slotCount
             readIndex.store(read, ordering: .releasing)
         }

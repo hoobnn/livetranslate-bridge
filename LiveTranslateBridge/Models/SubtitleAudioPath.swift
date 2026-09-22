@@ -18,6 +18,7 @@ extension SubtitleModel {
         private let direction: Direction
         private var client: TranslationClient?
         private var resampler: Resampler?
+        private var sourceFormat: AVAudioFormat?
         private let queue: RealtimeAudioQueue
         private let callback: Callback
 
@@ -42,10 +43,11 @@ extension SubtitleModel {
         }
 
         func install(client: TranslationClient?) {
+            queue.invalidate()
             queue.perform { [weak self] in
                 guard let self else { return }
                 self.client = client
-                if client == nil { self.resampler = nil }
+                if client == nil { self.resampler = nil; self.sourceFormat = nil }
             }
         }
 
@@ -55,7 +57,8 @@ extension SubtitleModel {
         func enqueue(_ buffer: AVAudioPCMBuffer) { queue.enqueue(buffer) }
 
         private func process(_ buffer: AVAudioPCMBuffer) {
-            if resampler == nil {
+            if resampler == nil || sourceFormat != buffer.format {
+                sourceFormat = buffer.format
                 resampler = try? Resampler(sourceFormat: buffer.format)
                 if resampler == nil { BridgeLog.audio.error("resampler could not be built") }
             }
@@ -127,8 +130,8 @@ extension SubtitleModel {
             // server: VAD simply never fires. Track the peak so the log says
             // which one this is.
             //
-            // Strided rather than exhaustive: this runs on the Core Audio IO
-            // thread for every buffer, and the peak is only ever read back as
+            // Strided rather than exhaustive: this runs on the audio worker
+            // for every buffer, and the peak is only ever read back as
             // a log line saying "live call" or "digital silence". Every 16th
             // sample at 16 kHz is still a thousand points a second — far more
             // than that distinction needs — for a sixteenth of the work.
@@ -160,13 +163,13 @@ extension SubtitleModel {
             sentBytes = 0
             peakSample = 0
 
-            // Int16 full scale is 32767; the service's default VAD threshold
-            // of 0.2 sits near 6553.
+            // Signal level only. A PCM peak does not reveal the service's
+            // VAD classification or the duration of speech/silence.
             let dbfs = loudest > 0
                 ? 20 * log10(Double(loudest) / 32767.0) : -Double.infinity
             let side = direction.rawValue
             BridgeLog.audio.notice(
-                "[\(side, privacy: .public)] peak \(loudest, privacy: .public) (\(String(format: "%.1f", dbfs), privacy: .public) dBFS)\(loudest < 1000 ? " — near silence, VAD will not fire" : "", privacy: .public)"
+                "[\(side, privacy: .public)] peak \(loudest, privacy: .public) (\(String(format: "%.1f", dbfs), privacy: .public) dBFS)\(loudest < 1000 ? " — near silence; check input level" : "", privacy: .public)"
             )
             // "handed to the client", not "sent": the client may still be
             // queueing these behind an unfinished handshake.

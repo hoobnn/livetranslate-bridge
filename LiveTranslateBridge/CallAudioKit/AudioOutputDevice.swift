@@ -20,19 +20,12 @@ nonisolated public struct AudioOutputDevice: Identifiable, Hashable, Sendable {
     /// what is written to it back as a recordable input.
     public let hasInputStreams: Bool
 
-    /// Loopback devices are the ones worth recommending for the uplink, and
-    /// they are recognisable by having both directions. The name check is not
-    /// load-bearing — it only sharpens the hint for the well-known ones.
-    public var isLoopbackCandidate: Bool {
-        guard hasInputStreams else { return false }
-        let lowered = name.lowercased()
-        if lowered.contains("blackhole") || lowered.contains("loopback")
-            || lowered.contains("soundflower") || lowered.contains("virtual") {
-            return true
-        }
-        // An aggregate of a real mic and a real speaker also reports both
-        // directions; keep it, since it may still be the right target.
-        return true
+    public var isLoopbackCandidate: Bool { hasInputStreams && isKnownLoopback }
+
+    /// Duplex hardware is not necessarily a virtual loopback device.
+    public var isKnownLoopback: Bool {
+        let label = (name + " " + (uid ?? "")).lowercased()
+        return ["blackhole", "loopback", "soundflower"].contains { label.contains($0) }
     }
 
     /// Every device that can play audio, in the order Core Audio lists them.
@@ -57,8 +50,8 @@ nonisolated public struct AudioOutputDevice: Identifiable, Hashable, Sendable {
 
     /// Resolves a stored UID back to a live device. Devices come and go — a USB
     /// interface is unplugged, BlackHole is uninstalled — so a saved choice is
-    /// a UID, and a missing one falls back to the system default rather than
-    /// failing the session.
+    /// a UID. Nil is unresolved; callers must not silently substitute a
+    /// different device when a saved, explicit output has disappeared.
     public static func named(uid: String?) -> AudioOutputDevice? {
         guard let uid, !uid.isEmpty else { return nil }
         return outputs().first { $0.uid == uid }
