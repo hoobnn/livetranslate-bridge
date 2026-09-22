@@ -71,6 +71,11 @@ final class DiagnosticsModel {
     private var monitor: CallMonitor?
     private var downlinkTap: DownlinkTap?
     private var uplinkCapture: UplinkCapture?
+    /// Whether a running session currently holds the microphone.
+    private var sessionOwnsInput = false
+    /// Kept so the meter can reopen the same device when the session releases
+    /// it, without the view having to hand it over a second time.
+    private var meterInputDevice: AudioInputDevice?
     private let meter = Meter()
     private var meterTimer: Timer?
     private var fileTask: Task<Void, Never>?
@@ -136,12 +141,21 @@ final class DiagnosticsModel {
 
     /// Opens the microphone as well, so this is the one panel action that
     /// triggers the microphone permission prompt.
+    ///
+    /// `sessionOwnsInput` is the running session's claim on the microphone.
+    /// The meter opens its own `UplinkCapture` on the same device, and two
+    /// `AVAudioEngine`s on one input contend for the AUHAL — the HAL logs
+    /// `cannot add handler to N from N - dropping` and one of them gets no
+    /// buffers, which reads as a dead meter or a session that hears nothing.
+    /// The session wins: it is the feature, the meter is a probe.
     func startMetering(
         sourceBundleID: String = callAudioBundleID,
-        inputDevice: AudioInputDevice? = nil
+        inputDevice: AudioInputDevice? = nil,
+        sessionOwnsInput: Bool = false
     ) {
         guard !isMetering, #available(macOS 14.2, *) else { return }
         isMetering = true
+        self.sessionOwnsInput = sessionOwnsInput
 
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.drainMeter() }
@@ -153,7 +167,14 @@ final class DiagnosticsModel {
         // The microphone meter is useful without a call, so it must not be
         // coupled to CallMonitor. The downlink tap still follows the call
         // daemon because there is no output process to tap while it is idle.
-        startUplinkMeter(device: inputDevice)
+        meterInputDevice = inputDevice
+        if sessionOwnsInput {
+            BridgeLog.audio.notice(
+                "microphone meter deferred: the running session holds the input device"
+            )
+        } else {
+            startUplinkMeter(device: inputDevice)
+        }
 
         let monitor = CallMonitor(targetBundleID: sourceBundleID)
         monitor.onChange = { [weak self] state in
@@ -174,8 +195,32 @@ final class DiagnosticsModel {
         uplinkCapture?.stop()
         uplinkCapture = nil
         isMetering = false
+        sessionOwnsInput = false
+        meterInputDevice = nil
         downlinkPeak = 0
         uplinkPeak = 0
+    }
+
+    /// Follows the session's claim on the microphone while the meter is up.
+    ///
+    /// Called when a session starts or stops with the panel already open: the
+    /// meter yields the input device on the way in and takes it back on the
+    /// way out, so the two never hold it at once. The downlink tap is
+    /// untouched — a process tap is not exclusive, and the session's own tap
+    /// coexists with it.
+    func setSessionOwnsInput(_ owns: Bool) {
+        guard isMetering, owns != sessionOwnsInput else { return }
+        sessionOwnsInput = owns
+        if owns {
+            uplinkCapture?.stop()
+            uplinkCapture = nil
+            uplinkPeak = 0
+            BridgeLog.audio.notice(
+                "microphone meter released the input device to the session"
+            )
+        } else {
+            startUplinkMeter(device: meterInputDevice)
+        }
     }
 
     private func startUplinkMeter(device: AudioInputDevice?) {
@@ -201,7 +246,7 @@ final class DiagnosticsModel {
     }
 
     private func openUplinkMeter(device: AudioInputDevice?) {
-        guard uplinkCapture == nil else { return }
+        guard uplinkCapture == nil, !sessionOwnsInput else { return }
         let capture = UplinkCapture()
         capture.onBuffer = { [meter] buffer in
             guard let data = buffer.floatChannelData?[0] else { return }

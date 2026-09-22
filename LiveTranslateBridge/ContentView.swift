@@ -7,10 +7,20 @@
 
 import SwiftUI
 
+/// The main window.
+///
+/// One content plane, not four layers of chrome around one.
+///
+/// The app has exactly two destinations and one of them is a debug panel, so
+/// a permanent sidebar spent a sixth of every window on a two-item list that
+/// never changes — and it put the session status, the window toolbar, the
+/// control bar and the log pane on four different edges of the same screen.
+/// The two destinations now live in the toolbar, where switching costs one
+/// click and nothing costs width.
 struct ContentView: View {
     @Bindable var model: SubtitleModel
-    @State private var pane: Pane? = .subtitles
-    @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var pane: Pane = .subtitles
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Neither `Tab` nor `Section`: both name SwiftUI types used right below.
     enum Pane: String, Hashable, CaseIterable, Identifiable {
@@ -31,72 +41,48 @@ struct ContentView: View {
     }
 
     var body: some View {
-        // A sidebar rather than a tab bar: macOS 26 gives the split view's
-        // sidebar its own glass layer under the content, and the two panes
-        // are destinations, not peers a user flips between mid-call.
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(Pane.allCases, selection: $pane) { item in
-                NavigationLink(value: item) {
-                    Label(item.title, systemImage: item.systemImage)
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 168, ideal: 188, max: 240)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                SidebarSessionStatus(model: model)
-            }
-        } detail: {
-            switch pane ?? .subtitles {
-            case .subtitles:
-                SubtitleView(model: model)
-            case .diagnostics:
+        ZStack {
+            AppCanvas()
+
+            // Keep the reading position and follow state when inspecting diagnostics.
+            SubtitleView(model: model, isActive: pane == .subtitles)
+                .opacity(pane == .subtitles ? 1 : 0)
+                .allowsHitTesting(pane == .subtitles)
+                .accessibilityHidden(pane != .subtitles)
+
+            if pane == .diagnostics {
                 DiagnosticsView(model: model)
             }
         }
-        .navigationTitle((pane ?? .subtitles).title)
-        .frame(minWidth: 820, minHeight: 540)
-    }
-}
-
-/// Persistent context at the bottom of the sidebar. It answers the two things
-/// worth knowing before changing destinations: whether a session is live and
-/// whether the board already contains content.
-private struct SidebarSessionStatus: View {
-    @Bindable var model: SubtitleModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 7, height: 7)
-                Text(model.status.label)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
+        .toolbar {
+            // The destination picker sits where macOS puts a view switcher:
+            // in the toolbar, under the window's title, rather than taking a
+            // column of its own for two items.
+            ToolbarItem(placement: .navigation) {
+                Picker(t("tab.subtitles"), selection: $pane) {
+                    ForEach(Pane.allCases) { item in
+                        Text(item.title)
+                            .tag(item)
+                            .accessibilityIdentifier("pane." + item.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .help(t("tab.switch.help"))
             }
-
-            if !model.entries.isEmpty {
-                Text(t("subtitles.entryCount", model.entries.count))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+            ToolbarSpacer(.flexible, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                SettingsLink {
+                    Label(t("ux.settings"), systemImage: "gearshape")
+                }
+                .help(t("ux.settings"))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider().opacity(0.35) }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var statusColor: Color {
-        switch model.status {
-        case .idle: return .secondary
-        case .waitingForCall, .connecting: return .orange
-        case .running: return .green
-        case .failed: return .red
+        .navigationTitle(pane.title)
+        .toolbar(removing: .title)
+        .frame(minWidth: 760, minHeight: 520)
+        .transaction { transaction in
+            if reduceMotion { transaction.animation = nil }
         }
     }
 }

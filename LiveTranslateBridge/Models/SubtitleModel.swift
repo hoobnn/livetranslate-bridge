@@ -58,6 +58,12 @@ final class SubtitleModel {
         @MainActor
         var label: String { t("mode.\(rawValue)") }
 
+        /// What choosing this actually changes, for the setup popover. The
+        /// label alone names the mode; this says what the board and the call
+        /// will do differently because of it.
+        @MainActor
+        var explanation: String { t("mode.\(rawValue).explanation") }
+
         var systemImage: String {
             switch self {
             case .translate: return "character.bubble"
@@ -85,6 +91,12 @@ final class SubtitleModel {
 
         @MainActor
         var label: String { t("scope.\(rawValue)") }
+
+        /// What this scope listens to, for the setup popover — including the
+        /// part that is not obvious from the name, which is whether a live
+        /// call is needed at all.
+        @MainActor
+        var explanation: String { t("scope.\(rawValue).explanation") }
 
         var systemImage: String {
             switch self {
@@ -214,7 +226,18 @@ final class SubtitleModel {
                 && lhs.startsNewSpeaker == rhs.startsNewSpeaker
         }
 
-        var isEmpty: Bool { transcript.isEmpty && translation.isEmpty }
+        private static let invisibleCharacters = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "\u{200B}\u{FEFF}"))
+
+        var hasTranscript: Bool {
+            !transcript.trimmingCharacters(in: Self.invisibleCharacters).isEmpty
+        }
+
+        var hasTranslation: Bool {
+            !translation.trimmingCharacters(in: Self.invisibleCharacters).isEmpty
+        }
+
+        var isEmpty: Bool { !hasTranscript && !hasTranslation }
 
         /// `HH:mm:ss` in the current locale, for the card header and the
         /// copied transcript. Formatted on read rather than stored, so a
@@ -271,8 +294,48 @@ final class SubtitleModel {
     private static let residentEntryLimit = 500
     private static let renderedEntryLimit = 250
 
-    var entryCount: Int { archivedEntries.count + entries.count }
-    var visibleEntries: ArraySlice<Entry> { entries.suffix(Self.renderedEntryLimit) }
+    var entryCount: Int { archivedEntries.count + entries.filter { !$0.isEmpty }.count }
+    /// The turns the board draws: the most recent window of them, minus any
+    /// that has no text yet, each paired with how it groups against the turn
+    /// drawn above it.
+    ///
+    /// An entry is opened by the first event of an utterance and filled as
+    /// recognition returns, so between those two moments it holds two empty
+    /// strings — and a turn that recognises to nothing holds them until it is
+    /// sealed. `seal` drops the ones that stayed empty, so the blanks that
+    /// reach here are the open ones, one per direction at most. They are not
+    /// visible as text, but the row still drew its rail and claimed its
+    /// spacing, so on a two-sided call the board grew a bare coloured tick
+    /// ahead of each side's next sentence.
+    ///
+    /// The grouping is recomputed here rather than read off the entry's own
+    /// `continuesRun`, because that flag is set against the entry's raw
+    /// neighbour — and once the blanks are dropped, the raw neighbour is not
+    /// the row the reader sees above it. An open blank between two of our
+    /// turns would otherwise split them into two runs and repeat the speaker
+    /// label with nothing in between to justify it.
+    var visibleEntries: [VisibleEntry] {
+        var rows: [VisibleEntry] = []
+        var previous: Direction?
+        for entry in entries.suffix(Self.renderedEntryLimit) where !entry.isEmpty {
+            rows.append(VisibleEntry(
+                entry: entry,
+                continuesRun: previous == entry.direction,
+                startsNewSpeaker: previous != nil && previous != entry.direction
+            ))
+            previous = entry.direction
+        }
+        return rows
+    }
+
+    /// One row of the board: the turn, and how it sits against the one above.
+    struct VisibleEntry: Identifiable {
+        let entry: Entry
+        let continuesRun: Bool
+        let startsNewSpeaker: Bool
+
+        var id: Entry.ID { entry.id }
+    }
     private(set) var status: Status = .idle
     private(set) var callState: CallState = .idle
     private(set) var isRunning = false
@@ -576,6 +639,51 @@ final class SubtitleModel {
         didSet { Defaults.region = region }
     }
 
+    /// How long a pause has to run before the service calls the utterance
+    /// finished, in milliseconds.
+    ///
+    /// This is the app's largest single lever on how fast a line appears: the
+    /// wait is spent before translation even starts, so it is added to every
+    /// subtitle on top of the model's own latency. It is also the one with a
+    /// real cost — see `TranslationClient.Config.Segmentation`, which holds
+    /// the reasoning and the bounds.
+    ///
+    /// A session setting, not a live one: the window is fixed in the
+    /// `session.update` that opens the socket, so changing it mid-call would
+    /// show a number the running session is not using.
+    var silenceDurationMS = Defaults.segmentation.silenceDuration {
+        didSet {
+            guard silenceDurationMS != oldValue else { return }
+            Defaults.segmentation = segmentation
+        }
+    }
+
+    /// How loud a frame must be to count as speech. See `Segmentation`.
+    var vadThreshold = Defaults.segmentation.threshold {
+        didSet {
+            guard vadThreshold != oldValue else { return }
+            Defaults.segmentation = segmentation
+        }
+    }
+
+    /// The pair as the client takes it, clamped to what the service accepts.
+    var segmentation: TranslationClient.Config.Segmentation {
+        .init(silenceDuration: silenceDurationMS, threshold: vadThreshold)
+    }
+
+    /// Whether the two are already where a fresh install starts, so the
+    /// settings pane can say there is nothing to undo.
+    var usesDefaultSegmentation: Bool {
+        segmentation == .responsive
+    }
+
+    func resetSegmentationToDefault() {
+        silenceDurationMS = TranslationClient.Config.Segmentation
+            .responsive.silenceDuration
+        vadThreshold = TranslationClient.Config.Segmentation
+            .responsive.threshold
+    }
+
     /// Translating a language into itself would echo the speaker back at
     /// themselves, so the pair has to differ. This is the app's only
     /// precondition beyond credentials.
@@ -866,7 +974,7 @@ final class SubtitleModel {
                 translation: entry.translation
             )
         }
-        let resident = entries.map { entry in
+        let resident = entries.filter { !$0.isEmpty }.map { entry in
             transcriptBlock(
                 direction: entry.direction,
                 startedAt: entry.startedAt,
@@ -950,7 +1058,8 @@ final class SubtitleModel {
             targetLanguage: targetLanguage,
             sourceLanguage: sourceLanguage,
             wantsAudio: wantsAudio,
-            voice: voice
+            voice: voice,
+            segmentation: segmentation
         )
         let client = TranslationClient(config: config)
         let batcher = TranslationEventBatcher(

@@ -64,6 +64,74 @@ struct SubtitleEntryTests {
         #expect(model.transcriptText.contains("line-599"))
     }
 
+    /// An utterance holds two empty strings between the event that opens it
+    /// and the first text that fills it, and a turn that recognises nothing
+    /// holds them until it is sealed. `seal` drops the ones that stayed
+    /// empty, so what the board has to skip is the *open* one — on a
+    /// two-sided call, one per direction, each drawing a bare rail and its
+    /// own gap ahead of that side's next sentence.
+    @Test func aTurnWithNoTextYetIsNotDrawn() {
+        let model = SubtitleModel()
+        model.ingestForTesting(.translationComplete("你好"), from: .remote)
+        // Opens our side's entry without giving it any text, which is the
+        // state a turn sits in while the far end is still speaking.
+        model.ingestForTesting(.translationDelta(""), from: .local)
+
+        #expect(model.entries.count == 2)
+        #expect(model.visibleEntries.count == 1)
+        #expect(model.visibleEntries.map(\.entry.translation) == ["你好"])
+    }
+
+    /// Dropping the blanks moves who sits above whom, so the speaker label's
+    /// run grouping has to be read off the drawn rows rather than off each
+    /// entry's raw neighbour. Two of our turns with only an open, textless
+    /// turn between them are one run on screen, and the second must not
+    /// repeat the label.
+    @Test func aBlankBetweenTwoTurnsDoesNotSplitTheirRun() {
+        let model = SubtitleModel()
+        model.ingestForTesting(.translationComplete("first"), from: .local)
+        model.ingestForTesting(.translationDelta(""), from: .remote)
+        model.ingestForTesting(.translationComplete("second"), from: .local)
+
+        let rows = model.visibleEntries
+        #expect(rows.count == 2)
+        #expect(rows[0].continuesRun == false)
+        #expect(rows[1].continuesRun == true)
+        #expect(rows[1].startsNewSpeaker == false)
+    }
+
+    /// The first row on the board starts no *new* speaker's run, so it takes
+    /// no leading gap — the flag is not simply `!continuesRun`.
+    @Test func theFirstRowStartsNoNewSpeaker() {
+        let model = SubtitleModel()
+        model.ingestForTesting(.translationComplete("opening"), from: .remote)
+        model.ingestForTesting(.translationComplete("reply"), from: .local)
+
+        let rows = model.visibleEntries
+        #expect(rows[0].startsNewSpeaker == false)
+        #expect(rows[1].startsNewSpeaker == true)
+    }
+
+    @Test func whitespaceUtterancesDoNotLeaveRailsCountsOrCopiedHeaders() {
+        let model = SubtitleModel()
+        model.ingestForTesting(.translationComplete(" \n\t\u{200B}\u{FEFF}"), from: .local)
+        model.ingestForTesting(.translationDelta("　\n"), from: .local)
+        #expect(model.visibleEntries.isEmpty)
+        #expect(model.entryCount == 0)
+        #expect(model.transcriptText.isEmpty)
+        model.ingestForTesting(.translationDelta("Hello"), from: .local)
+        #expect(model.visibleEntries.count == 1)
+        #expect(model.entryCount == 1)
+        #expect(model.visibleEntries[0].continuesRun == false)
+    }
+
+    @Test func whitespaceTranslationDoesNotHideReadableSource() {
+        let entry = SubtitleModel.Entry(direction: .remote, transcript: "你好", translation: " \n")
+        #expect(entry.hasTranscript)
+        #expect(!entry.hasTranslation)
+        #expect(!entry.isEmpty)
+    }
+
     @Test func snapshotsReplaceRatherThanAppend() {
         let model = SubtitleModel()
         model.ingestForTesting(.translation("你好"))
@@ -1310,5 +1378,90 @@ struct ReconnectBufferTests {
         // And a late buffer from a capture still winding down is ignored.
         client.sendAudio(audio(bytes: 3_200))
         #expect(client.bufferedBytesForTesting == 0)
+    }
+}
+
+/// The silence window is the app's largest lever on how fast a line appears,
+/// and the one setting the service silently ignores if it is malformed. What
+/// is worth pinning is that it reaches the wire at all, on both schemas, and
+/// that a value outside the service's range is corrected here rather than
+/// rejected there — a refused `session.update` reads as a dead socket.
+struct SegmentationConfigTests {
+    private func config(
+        segmentation: TranslationClient.Config.Segmentation,
+        voice: TranslationClient.Config.Voice = .preset
+    ) -> TranslationClient.Config {
+        .init(apiKey: "test", workspaceID: "test", targetLanguage: "zh",
+              sourceLanguage: "en", wantsAudio: voice != .preset,
+              voice: voice, segmentation: segmentation)
+    }
+
+    private func turnDetection(
+        _ config: TranslationClient.Config
+    ) -> [String: Any]? {
+        config.sessionUpdate["turn_detection"] as? [String: Any]
+    }
+
+    @Test func theRequestedWindowReachesBothSchemas() {
+        let current = config(segmentation: .responsive)
+        #expect(current.modelID == TranslationClient.model)
+        #expect(turnDetection(current)?["type"] as? String == "server_vad")
+        #expect(turnDetection(current)?["silence_duration_ms"] as? Int == 400)
+
+        // The clone path builds a different session object entirely, so it
+        // is its own chance to drop the field.
+        let cloning = config(segmentation: .responsive, voice: .cloneOnce)
+        #expect(cloning.modelID == TranslationClient.voiceCloneModel)
+        #expect(turnDetection(cloning)?["silence_duration_ms"] as? Int == 400)
+    }
+
+    @Test func theDefaultIsShorterThanTheServiceWouldWaitOnItsOwn() {
+        #expect(TranslationClient.Config.Segmentation.responsive.silenceDuration
+                < TranslationClient.Config.Segmentation.serviceDefault.silenceDuration)
+    }
+
+    @Test func valuesOutsideTheServicesRangeAreClampedNotSent() {
+        let tooShort = TranslationClient.Config.Segmentation(
+            silenceDuration: 10, threshold: -4
+        )
+        #expect(tooShort.silenceDuration == 200)
+        #expect(tooShort.threshold == -1)
+
+        let tooLong = TranslationClient.Config.Segmentation(
+            silenceDuration: 99_000, threshold: 4
+        )
+        #expect(tooLong.silenceDuration == 6_000)
+        #expect(tooLong.threshold == 1)
+    }
+
+    @Test func theModelPassesItsOwnSettingToTheClient() async {
+        await MainActor.run {
+            SubtitleModel.withTemporaryDefaults {
+                let model = SubtitleModel()
+                model.silenceDurationMS = 300
+                model.vadThreshold = 0.1
+                #expect(model.segmentation.silenceDuration == 300)
+                #expect(model.segmentation.threshold == 0.1)
+                #expect(!model.usesDefaultSegmentation)
+
+                model.resetSegmentationToDefault()
+                #expect(model.usesDefaultSegmentation)
+                #expect(model.segmentation == .responsive)
+            }
+        }
+    }
+
+    @Test func theSettingSurvivesRelaunch() async {
+        await MainActor.run {
+            SubtitleModel.withTemporaryDefaults {
+                let first = SubtitleModel()
+                first.silenceDurationMS = 600
+                first.vadThreshold = 0.35
+
+                let second = SubtitleModel()
+                #expect(second.silenceDurationMS == 600)
+                #expect(second.vadThreshold == 0.35)
+            }
+        }
     }
 }

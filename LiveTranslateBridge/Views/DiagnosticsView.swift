@@ -12,9 +12,9 @@ struct DiagnosticsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.sectionSpacing) {
                 Text(t("diagnostics.subtitle"))
-                    .font(.callout)
+                    .font(.App.body)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, Theme.spacing4)
 
                 processSection
                 levelSection
@@ -25,11 +25,15 @@ struct DiagnosticsView: View {
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .background { AppCanvas() }
         .onAppear {
             diagnostics.refreshProcessReport(sourceBundleID: model.sourceBundleID)
         }
         .onDisappear { diagnostics.stopMetering() }
+        // A session started or stopped while the panel is open: hand the
+        // microphone over, or take it back.
+        .onChange(of: model.isRunning && model.runningScope.captures(.local)) { _, owns in
+            diagnostics.setSessionOwnsInput(owns)
+        }
         .fileImporter(
             isPresented: $isPickingFile,
             allowedContentTypes: [.wav, .audio]
@@ -46,11 +50,11 @@ struct DiagnosticsView: View {
     // MARK: - process
 
     private var processSection: some View {
-        Card(t("diagnostics.process.title"), systemImage: "phone.connection") {
+        Card(t("diagnostics.process.title")) {
             ProcessReport(report: diagnostics.processReport)
 
             Button {
-                withAnimation(.snappy) {
+                withAnimation(Theme.settle) {
                     diagnostics.refreshProcessReport(
                         sourceBundleID: model.sourceBundleID
                     )
@@ -65,7 +69,6 @@ struct DiagnosticsView: View {
 
     private var levelSection: some View {
         Card(t("diagnostics.levels.title"),
-             systemImage: "waveform",
              subtitle: t("diagnostics.levels.note")) {
             VStack(spacing: 8) {
                 LevelBar(label: "DL", peak: diagnostics.downlinkPeak)
@@ -80,7 +83,11 @@ struct DiagnosticsView: View {
                 } else {
                     diagnostics.startMetering(
                         sourceBundleID: model.sourceBundleID,
-                        inputDevice: AudioInputDevice.named(uid: model.inputDeviceUID)
+                        inputDevice: AudioInputDevice.named(uid: model.inputDeviceUID),
+                        // A running session already holds the microphone; the
+                        // meter shows the downlink only until it lets go.
+                        sessionOwnsInput: model.isRunning
+                            && model.runningScope.captures(.local)
                     )
                 }
             } label: {
@@ -97,7 +104,6 @@ struct DiagnosticsView: View {
 
     private var fileSection: some View {
         Card(t("diagnostics.file.title"),
-             systemImage: "waveform.badge.plus",
              subtitle: t("diagnostics.file.note")) {
             HStack(spacing: 10) {
                 Button {
@@ -120,7 +126,7 @@ struct DiagnosticsView: View {
                     ForEach(Array(diagnostics.fileLines.enumerated()), id: \.offset) {
                         _, line in
                         Text(line.display)
-                            .font(.callout)
+                            .font(.App.body)
                             .foregroundStyle(line.isError ? Color.red : .primary)
                             .textSelection(.enabled)
                     }
@@ -136,17 +142,16 @@ struct DiagnosticsView: View {
 
     private var maintenanceSection: some View {
         Card(t("diagnostics.maintenance.title"),
-             systemImage: "wrench.and.screwdriver",
              subtitle: t("diagnostics.maintenance.note")) {
             Button {
-                withAnimation(.snappy) { diagnostics.sweepStaleAggregates() }
+                withAnimation(Theme.settle) { diagnostics.sweepStaleAggregates() }
             } label: {
                 Label(t("diagnostics.maintenance.sweep"), systemImage: "trash")
             }
 
             if diagnostics.didSweep {
                 Label(t("diagnostics.maintenance.swept"), systemImage: "checkmark.circle")
-                    .font(.callout)
+                    .font(.App.body)
                     .foregroundStyle(.secondary)
             }
         }
@@ -165,7 +170,7 @@ private struct ProcessReport: View {
             switch report {
             case .notChecked:
                 Text(t("diagnostics.process.notChecked"))
-                    .font(.callout)
+                    .font(.App.body)
                     .foregroundStyle(.secondary)
 
             case .noCall:
@@ -198,11 +203,11 @@ private struct ProcessReport: View {
     private func row(_ label: String, _ value: String, mono: Bool = true) -> some View {
         GridRow {
             Text(label)
-                .font(.callout)
+                .font(.App.body)
                 .foregroundStyle(.secondary)
                 .gridColumnAlignment(.leading)
             Text(value)
-                .font(mono ? .callout.monospaced() : .callout)
+                .font(mono ? .App.mono : .App.body)
                 .textSelection(.enabled)
         }
     }
@@ -217,26 +222,35 @@ private struct LevelBar: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(label)
-                .font(.caption.monospaced().weight(.semibold))
+                .font(.App.mono)
                 .foregroundStyle(.secondary)
                 .frame(width: 24, alignment: .leading)
 
             Text(String(format: "%6.1f dB", decibels))
-                .font(.caption.monospaced())
+                .font(.App.mono)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
 
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    Capsule()
-                        .fill(fill)
-                        .frame(width: geometry.size.width * fraction)
-                        .animation(.easeOut(duration: 0.08), value: fraction)
+            // The track sets the row's height; the reader sizing the fill sits
+            // inside it as an overlay rather than being the bar itself. As the
+            // bar proper a `GeometryReader` is greedy in both axes, which is
+            // what let a meter redrawing many times a second push the rows
+            // around it as the level moved.
+            Capsule()
+                .fill(.quaternary)
+                .frame(height: 6)
+                .overlay(alignment: .leading) {
+                    GeometryReader { geometry in
+                        Capsule()
+                            .fill(fill)
+                            .frame(width: geometry.size.width * fraction)
+                    }
                 }
-            }
-            .frame(height: 6)
+                .animation(.easeOut(duration: 0.08), value: fraction)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(String(format: "%.0f dB", decibels))
     }
 
     /// Green through the usable range, amber approaching full scale, red at
@@ -258,5 +272,6 @@ private struct LevelBar: View {
 
 #Preview {
     DiagnosticsView(model: SubtitleModel())
+        .background { AppCanvas() }
         .frame(width: 620, height: 560)
 }

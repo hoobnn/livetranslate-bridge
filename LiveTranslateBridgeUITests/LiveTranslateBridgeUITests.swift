@@ -1,43 +1,53 @@
-//
-//  LiveTranslateBridgeUITests.swift
-//  LiveTranslateBridgeUITests
-//
-//  Created by haobin on 2026/9/20.
-//
-
 import XCTest
 
 final class LiveTranslateBridgeUITests: XCTestCase {
-
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testCopyFeedbackAndClearCancellation() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-sampleBoard", "-appLanguage", "en", "-logPaneExpanded", "NO"]
         app.launch()
+        let copy = app.buttons["transcript.copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 10))
+        XCTAssertTrue(copy.isEnabled)
+        recordAppearance(app, name: "Subtitles-light")
+        copy.click()
+        XCTAssertTrue(app.buttons["transcript.copy"].label.contains("Copied"))
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        app.buttons["transcript.clear"].click()
+        XCTAssertTrue(app.buttons["transcript.cancelClear"].waitForExistence(timeout: 3))
+        app.buttons["transcript.cancelClear"].click()
+        XCTAssertTrue(copy.isEnabled, "Cancelling must preserve the transcript")
+
+        app.buttons["transcript.clear"].click()
+        app.buttons["transcript.confirmClear"].click()
+        XCTAssertFalse(copy.isEnabled)
     }
 
     @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
+    func testDiagnosticsRoundTripPreservesTranscript() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-sampleBoard", "-appLanguage", "en", "-logPaneExpanded", "NO", "-previewDark"]
+        app.launch()
+        XCTAssertTrue(app.buttons["transcript.copy"].waitForExistence(timeout: 10))
+        recordAppearance(app, name: "Subtitles-dark")
+        app.radioButtons["Diagnostics"].click()
+        XCTAssertFalse(app.buttons["transcript.copy"].exists)
+        recordAppearance(app, name: "Diagnostics-dark")
+        app.radioButtons["Subtitles"].click()
+        XCTAssertTrue(app.buttons["transcript.copy"].isEnabled)
+        app.buttons["session.setup"].click()
+        XCTAssertTrue(app.staticTexts["Session"].waitForExistence(timeout: 3))
     }
+    @MainActor
+    private func recordAppearance(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
 }

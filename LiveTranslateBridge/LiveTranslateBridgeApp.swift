@@ -28,6 +28,9 @@ struct LiveTranslateBridgeApp: App {
                 // it with a sample exchange so it can be — for a screenshot,
                 // or to check a layout change at a real window size.
                 #if DEBUG
+                .preferredColorScheme(
+                    ProcessInfo.processInfo.arguments.contains("-previewDark") ? .dark : nil
+                )
                 .task {
                     guard ProcessInfo.processInfo.arguments.contains("-sampleBoard")
                     else { return }
