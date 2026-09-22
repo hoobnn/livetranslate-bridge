@@ -4,8 +4,8 @@ import Foundation
 /// Streams 16 kHz PCM to Alibaba Model Studio's live translation model and
 /// reports transcript and translation as they arrive.
 ///
-/// Protocol: qwen3.8 by default, qwen3.5 when voice cloning is requested,
-/// over the same WebSocket endpoint with model-specific session fields.
+/// Protocol: qwen3.8 for both preset and cloned voices; voice settings never
+/// change the model or silently fall back to an older protocol.
 /// https://help.aliyun.com/zh/model-studio/qwen3-8-livetranslate-flash-realtime
 ///
 /// One client handles one direction. A call needs two: the far end translated
@@ -18,12 +18,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         /// Language to translate into, e.g. "zh", "en". See the model's
         /// supported-language table.
         ///
-        /// nil asks for no translation at all: the session then only
-        /// transcribes, and the `translation` block is left out of
-        /// `session.update` entirely rather than sent empty. ASR runs either
-        /// way and is what produces the transcript.
+        /// nil omits the translation configuration. Callers may display only
+        /// ASR, but omission does not disable the service's default translation.
         public var targetLanguage: String?
-        /// Source language; nil lets the model detect it.
+        /// qwen3.5 source language; qwen3.8 always detects it automatically.
         public var sourceLanguage: String?
         /// Synthesised speech of the translation. Off by default: playing it
         /// during a call feeds back into the microphone.
@@ -33,34 +31,21 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         /// Whose voice the synthesised translation speaks in. Only has an
         /// effect when `wantsAudio` is on, since it is the audio it shapes.
         public var voice: Voice
-        /// How the service decides an utterance has ended. This is the single
-        /// largest lever on how fast a subtitle appears — see `Segmentation`.
+        /// qwen3.5 VAD controls. qwen3.8 uses its independent speaker detection
+        /// schema and does not consume this legacy pause window.
         public var segmentation: Segmentation
 
         /// When the service closes an utterance and starts translating it.
         ///
-        /// The service segments on silence: it waits for a gap of
-        /// `silenceDuration` after speech before committing the buffer, and
-        /// everything downstream — translation, synthesis, the subtitle —
-        /// starts only then. Left unset the service waits a full second,
-        /// which is added to every single line on the board on top of the
-        /// model's own latency. Shortening it is free latency back.
-        ///
-        /// The trade is real, though, and it is accuracy: cut the gap too
-        /// short and an ordinary mid-sentence pause — drawing breath, or
-        /// hesitating before a name — reads as the end of the utterance. The
-        /// sentence is then split in two and each half is translated without
-        /// the other's context, which is the one thing that actually makes a
-        /// translation wrong rather than merely late.
+        /// Server VAD closes a turn after the configured silence window.
+        /// Streaming output may arrive before then. A short window can split
+        /// ordinary breathing pauses and remove context from each translation.
         public struct Segmentation: Sendable, Equatable {
             /// The silence that ends an utterance. The service accepts
             /// 200–6000 ms.
             public var silenceDuration: Int
-            /// How loud a frame must be to count as speech, on the service's
-            /// own [-1, 1] scale, where its default is 0.2 — roughly −14 dBFS
-            /// at Int16 full scale. Lower catches a quiet talker whose speech
-            /// would otherwise never open an utterance at all; higher keeps
-            /// room tone and keyboard noise from opening one.
+            /// Service-side VAD sensitivity. This is not the per-second PCM
+            /// peak shown in diagnostics and must not be converted to dBFS.
             public var threshold: Double
 
             /// The service's own defaults, sent explicitly so the wire config
@@ -69,12 +54,15 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
                 silenceDuration: 1_000, threshold: 0.2
             )
 
-            /// What the app asks for unless the user says otherwise. 400 ms
-            /// is short enough to take more than half a second off every
-            /// line, and long enough to sit above the pauses that fall inside
-            /// a sentence — those cluster under ~300 ms in running speech.
+            /// Explicit low-latency option. Natural breathing and hesitation can
+            /// exceed this; it does not guarantee a semantically complete sentence.
             public static let responsive = Segmentation(
                 silenceDuration: 400, threshold: 0.2
+            )
+
+            /// Longer pauses in narrated lessons and long-form speech.
+            public static let listening = Segmentation(
+                silenceDuration: 1_500, threshold: 0.2
             )
 
             public init(silenceDuration: Int, threshold: Double) {
@@ -145,7 +133,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             wantsAudio: Bool = false,
             phrases: [String: String] = [:],
             voice: Voice = .preset,
-            segmentation: Segmentation = .responsive
+            segmentation: Segmentation = .serviceDefault
         ) {
             self.segmentation = segmentation
             self.apiKey = apiKey
@@ -158,10 +146,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             self.voice = voice
         }
 
-        var modelID: String {
-            wantsAudio && voice.frequency != nil
-                ? TranslationClient.voiceCloneModel : TranslationClient.model
-        }
+        var modelID: String { TranslationClient.model }
 
         var sessionUpdate: [String: Any] {
             var translation: [String: Any]?
@@ -172,63 +157,24 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
                 }
             }
 
-            if modelID == TranslationClient.voiceCloneModel {
-                var session: [String: Any] = [
-                    "modalities": ["text", "audio"],
-                    "sample_rate": 16_000,
-                    "input_audio_format": "pcm",
-                    "output_audio_format": "pcm",
-                    "input_audio_transcription": [
-                        "model": "qwen3-asr-flash-realtime",
-                    ],
-                ]
-                if let translation { session["translation"] = translation }
-                if let sourceLanguage {
-                    session["input_audio_transcription"] = [
-                        "model": "qwen3-asr-flash-realtime",
-                        "language": sourceLanguage,
-                    ]
-                }
-                if let frequency = voice.frequency, let name = voice.name {
-                    session["voice"] = name
-                    session["enable_voice_clone"] = true
-                    session["voice_clone_options"] = ["frequency": frequency]
-                }
-                // Sent on both schemas: the service segments on silence in
-                // either, and left out it waits its own full second before
-                // anything downstream starts. See `Segmentation`.
-                session["turn_detection"] = segmentation.payload
-                return session
-            }
-
             var session: [String: Any] = [
                 "output_modalities": wantsAudio ? ["text", "audio"] : ["text"],
-                "turn_detection": segmentation.payload,
+                "audio": ["input": ["turn_detection": [
+                    "type": "speaker_detection", "threshold": 0.5,
+                ]]],
             ]
             if let translation { session["translation"] = translation }
-            if let sourceLanguage {
-                session["input_audio_transcription"] = ["language": sourceLanguage]
+            if wantsAudio, let frequency = voice.frequency, let name = voice.name {
+                session["voice"] = name
+                var audio = session["audio"] as? [String: Any] ?? [:]
+                audio["output"] = ["voice": name]
+                session["audio"] = audio
+                session["enable_voice_clone"] = true
+                session["voice_clone_options"] = ["frequency": frequency]
             }
+            // qwen3.8 ASR is always enabled and detects the source language.
+            // Do not send legacy input_audio_transcription / turn_detection.
             return session
-        }
-
-        /// The same configuration speaking in the stock voice.
-        ///
-        /// Dropping the clone also drops `modelID` back to the q3.8 schema,
-        /// which is the point: the cloning model is only worth its different
-        /// session shape while cloning actually works.
-        func withPresetVoice() -> Config {
-            Config(
-                apiKey: apiKey,
-                workspaceID: workspaceID,
-                region: region,
-                targetLanguage: targetLanguage,
-                sourceLanguage: sourceLanguage,
-                wantsAudio: wantsAudio,
-                phrases: phrases,
-                voice: .preset,
-                segmentation: segmentation
-            )
         }
 
         var url: URL {
@@ -244,9 +190,30 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     }
 
     public static let model = "qwen3.8-livetranslate-flash-realtime"
-    public static let voiceCloneModel = "qwen3.5-livetranslate-flash-realtime"
+
+    public struct EventIdentity: Sendable, Hashable {
+        public var streamID: String
+        public var itemID: String?
+        public var responseID: String?
+        public var audioMS: Int?
+        public init(streamID: String, itemID: String? = nil, responseID: String? = nil, audioMS: Int? = nil) {
+            self.streamID = streamID; self.itemID = itemID
+            self.responseID = responseID; self.audioMS = audioMS
+        }
+    }
 
     public enum Event: Sendable {
+        indirect case identified(EventIdentity, Event)
+        case itemLinked(output: String, source: String)
+        case responseFinished(String)
+        case responseOpened
+        case streamStarted(String)
+
+        var payload: Event {
+            if case .identified(_, let event) = self { return event.payload }
+            return self
+        }
+
         /// Cumulative source-language transcript; replaces what came before.
         /// Only older models emit this; q3.8 sends `transcriptDelta`.
         case transcript(String)
@@ -264,6 +231,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         case translationComplete(String)
         /// Synthesised audio, 24 kHz mono Int16, only when `wantsAudio`.
         case audio(Data)
+        case audioComplete
         case speechStarted
         case speechStopped
         case sessionReady
@@ -274,6 +242,11 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// Mutable only so a session can fall back to the stock voice when the
     /// service rejects the cloned one; see `handleServiceError`. Every other
     /// field is fixed for the client's lifetime.
+    private let diagnosticLabel: String
+    private var itemLinks = ServerItemLinks()
+    private var streamID = UUID().uuidString
+    private var receivedEventIDs = Set<String>()
+    private var eventIDOrder: [String] = []
     private var config: Config
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
@@ -386,6 +359,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     private let sweepQueue = DispatchQueue(label: "call-audio-bridge.keepalive")
 
     public var onEvent: (@Sendable (Event) -> Void)?
+    #if DEBUG
+    /// Opt-in protocol trace for deterministic file replay; never enabled by UI.
+    var onRawFrameForTesting: (@Sendable (String) -> Void)?
+    #endif
 
     /// True once the socket has failed or been closed; callers should stop
     /// sending audio.
@@ -477,8 +454,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         return isClosing
     }
 
-    /// The live configuration, read under `lock` because the clone fallback
-    /// can rewrite it from the socket's callback queue mid-session.
+    /// The live configuration, read under the socket lifecycle lock.
     private var currentConfig: Config {
         lock.lock(); defer { lock.unlock() }
         return config
@@ -502,7 +478,8 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         scheduleReconnect(reason: reason)
     }
 
-    public init(config: Config) {
+    public init(config: Config, diagnosticLabel: String = "unspecified") {
+        self.diagnosticLabel = diagnosticLabel
         self.config = config
         super.init()
     }
@@ -654,23 +631,13 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// single recoverable 400 used to end subtitling for the rest of a call
     /// while audio capture carried on feeding a socket nobody would reopen.
     private func handleServiceError(_ message: String) {
-        // The service clones a voice into its own prefix cache and hands the
-        // clone an ID it makes up. Reopening the socket invalidates the
-        // clone, but the cache can still name it, so the new session opens
-        // against a timbre that no longer exists and fails on every reply.
-        // Retrying cannot clear that — only giving up the clone can.
-        if isMissingClonedVoice(message) {
-            lock.lock()
-            let wasCloning = config.voice.frequency != nil
-            if wasCloning { config = config.withPresetVoice() }
-            lock.unlock()
-            if wasCloning {
-                BridgeLog.socket.error(
-                    "service lost the cloned voice; falling back to the stock voice for the rest of the session"
-                )
-                markDead(reason: "cloned voice unavailable")
-                return
-            }
+        // A missing cloned voice must be visible. Never silently change the
+        // requested voice or switch model to make an unsuccessful clone look OK.
+        if currentConfig.wantsAudio, currentConfig.voice.frequency != nil,
+           isMissingClonedVoice(message) {
+            onEvent?(.failed(message))
+            close()
+            return
         }
 
         guard isRecoverable(message) else {
@@ -823,7 +790,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         // the user feels on every subtitle, and the one most worth checking
         // against what `session.updated` echoes back.
         BridgeLog.socket.notice(
-            "segmentation: silence \(config.segmentation.silenceDuration, privacy: .public) ms, threshold \(String(format: "%.2f", config.segmentation.threshold), privacy: .public)"
+            "segmentation requested: audio.input.turn_detection=speaker_detection threshold=0.5"
         )
         send(["type": "session.update", "session": sessionConfig])
     }
@@ -1031,6 +998,9 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     }
 
     private func handle(_ text: String) {
+        #if DEBUG
+        onRawFrameForTesting?(text)
+        #endif
         if ProcessInfo.processInfo.environment["CALLAUDIO_DEBUG"] != nil {
             // stderr is invisible in a GUI app, so mirror it to the log where
             // a running session can actually be read.
@@ -1048,14 +1018,66 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             event["transcript"] as? String ?? event["text"] as? String ?? ""
         }
 
+        if let id = event["event_id"] as? String {
+            guard receivedEventIDs.insert(id).inserted else { return }
+            eventIDOrder.append(id)
+            if eventIDOrder.count > 4096 { receivedEventIDs.remove(eventIDOrder.removeFirst()) }
+        }
+        let identity = EventIdentity(streamID: streamID,
+            itemID: event["item_id"] as? String,
+            responseID: event["response_id"] as? String,
+            audioMS: (event["audio_start_ms"] ?? event["audio_end_ms"]) as? Int)
+        func emit(_ value: Event) {
+            // Never discard server identity. Events missing IDs keep the legacy
+            // path for compatibility; they are not guessed onto a known turn.
+            if identity.itemID != nil || identity.responseID != nil {
+                onEvent?(.identified(identity, value))
+            } else { onEvent?(value) }
+        }
+
+        for link in itemLinks.observe(type: type, event: event) {
+            onEvent?(.identified(.init(streamID: streamID, itemID: link.output),
+                .itemLinked(output: link.output, source: link.source)))
+            BridgeLog.socket.notice("[\(self.diagnosticLabel, privacy: .public)] verified segment link stream=\(self.streamID, privacy: .public) output=\(link.output, privacy: .public) source=\(link.source, privacy: .public)")
+        }
         switch type {
-        case "conversation.item.created", "response.created", "response.done",
+        case "conversation.item.created", "response.output_item.added", "response.output_item.done":
+            break // Metadata is classified above; role alone is insufficient.
+        case "response.done":
+            if let response = event["response"] as? [String: Any], let id = response["id"] as? String {
+                let status = response["status"] as? String ?? "unknown"
+                let outputs = response["output"] as? [[String: Any]] ?? []
+                for item in outputs {
+                    guard let itemID = item["id"] as? String else { continue }
+                    let context = EventIdentity(streamID: streamID, itemID: itemID, responseID: id)
+                    for part in item["content"] as? [[String: Any]] ?? [] {
+                        if let value = (part["transcript"] ?? part["text"]) as? String, !value.isEmpty {
+                            onEvent?(.identified(context, .translationComplete(value)))
+                        }
+                    }
+                    onEvent?(.identified(context, .responseFinished(status)))
+                }
+                onEvent?(.identified(.init(streamID: streamID, responseID: id), .responseFinished(status)))
+                BridgeLog.socket.notice("[\(self.diagnosticLabel, privacy: .public)] response ended stream=\(self.streamID, privacy: .public) id=\(id, privacy: .public) status=\(status, privacy: .public)")
+            }
+        case "response.created":
+            if let response = event["response"] as? [String: Any], let id = response["id"] as? String {
+                onEvent?(.identified(.init(streamID: streamID, responseID: id), .responseOpened))
+            }
+        case "response.content_part.added", "response.content_part.done",
              "input_audio_buffer.committed", "rate_limits.updated":
             // Named individually so the catch-all below stays meaningful:
             // these are routine and carry nothing the subtitles need.
             BridgeLog.socket.notice("server event: \(type, privacy: .public)")
 
         case "session.created":
+            itemLinks = ServerItemLinks()
+            streamID = ((event["session"] as? [String: Any])?["id"] as? String) ?? UUID().uuidString
+            receivedEventIDs.removeAll(); eventIDOrder.removeAll()
+            if let id = event["event_id"] as? String {
+                receivedEventIDs.insert(id); eventIDOrder.append(id)
+            }
+            onEvent?(.streamStarted(streamID))
             // Purely informational: the configuration that matters is the one
             // `session.update` sends back. Logged because its echo of the
             // server defaults is the reference for what we must not drop.
@@ -1066,34 +1088,34 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             )
 
         case "session.updated":
-            if currentConfig.voice.frequency != nil {
+            if currentConfig.wantsAudio, let frequency = currentConfig.voice.frequency {
                 let session = event["session"] as? [String: Any]
-                let accepted = session?["enable_voice_clone"] as? Bool == true
-                // Deliberately not called "confirmed": this is the service
-                // echoing the field back, which it does even when the timbre
-                // it would speak with no longer exists. The clone is only
-                // really known to work once a reply is spoken in it.
-                BridgeLog.socket.notice(
-                    "voice clone \(accepted ? "requested and echoed back" : "not echoed back", privacy: .public) by session.updated"
-                )
-            }
-            // A `turn_detection` the service silently ignored looks exactly
-            // like one it applied: the only difference is a second of extra
-            // lag per line, which nobody can attribute without this line.
-            if let accepted = (event["session"] as? [String: Any])?[
-                "turn_detection"
-            ] as? [String: Any] {
-                let silence = accepted["silence_duration_ms"] as? Int
-                let echoed = silence.map(String.init) ?? "?"
-                let asked = currentConfig.segmentation.silenceDuration
-                BridgeLog.socket.notice(
-                    "segmentation confirmed: silence \(echoed, privacy: .public) ms (asked \(asked, privacy: .public))"
-                )
-                if let silence, silence != asked {
-                    BridgeLog.socket.error(
-                        "service overrode the requested silence window; subtitles will lag by the difference"
-                    )
+                let audio = session?["audio"] as? [String: Any]
+                let output = audio?["output"] as? [String: Any]
+                let options = session?["voice_clone_options"] as? [String: Any]
+                guard session?["enable_voice_clone"] as? Bool == true,
+                      options?["frequency"] as? String == frequency,
+                      output?["voice"] as? String == currentConfig.voice.name else {
+                    onEvent?(.failed("qwen3.8 did not confirm the requested voice-clone configuration"))
+                    close()
+                    return
                 }
+                BridgeLog.socket.notice("qwen3.8 voice clone configuration echoed; audio similarity still requires listening")
+            }
+            let acceptedSession = event["session"] as? [String: Any] ?? [:]
+            let audio = acceptedSession["audio"] as? [String: Any]
+            let input = audio?["input"] as? [String: Any]
+            let accepted = input?["turn_detection"] as? [String: Any]
+            let requestedType = "speaker_detection"
+            if let accepted {
+                let detectionType = accepted["type"] as? String ?? "unknown"
+                let silence = (accepted["silence_duration_ms"] as? Int).map(String.init) ?? "not reported"
+                BridgeLog.socket.notice("[\(self.diagnosticLabel, privacy: .public)] segmentation echoed: model=\(currentConfig.modelID, privacy: .public) type=\(detectionType, privacy: .public) silence_ms=\(silence, privacy: .public)")
+                if detectionType != requestedType {
+                    BridgeLog.socket.error("service segmentation type differs from request")
+                }
+            } else {
+                BridgeLog.socket.error("service did not echo the model-specific segmentation configuration")
             }
             lock.lock()
             isOpen = true
@@ -1119,7 +1141,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             BridgeLog.socket.notice(
                 "session.updated; flushing \(queued, privacy: .public) queued buffers\(wasReconnect ? " (after reconnect, \(carried.count) carried)" : "", privacy: .public)"
             )
-            onEvent?(.sessionReady)
+            emit(.sessionReady)
             resumeReady(true)
             flushPendingAudio()
 
@@ -1127,7 +1149,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             // q3.8's transcript path: a true delta, unlike the `.text`
             // snapshots the older models send.
             let value = delta()
-            if !value.isEmpty { onEvent?(.transcriptDelta(value)) }
+            if !value.isEmpty { emit(.transcriptDelta(value)) }
 
         case "conversation.item.input_audio_transcription.text":
             // Confirmed text plus the still-changing tail; both are cumulative
@@ -1135,45 +1157,50 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             let confirmed = event["text"] as? String ?? ""
             let stash = event["stash"] as? String ?? ""
             let value = confirmed + stash
-            if !value.isEmpty { onEvent?(.transcript(value)) }
+            if !value.isEmpty { emit(.transcript(value)) }
 
         case "conversation.item.input_audio_transcription.completed":
             let value = transcriptText()
-            if !value.isEmpty { onEvent?(.transcriptComplete(value)) }
+            emit(.transcriptComplete(value))
 
         case "conversation.item.input_audio_transcription.failed":
-            onEvent?(.failed("transcription failed: \(text)"))
+            emit(.failed("transcription failed: \(text)"))
 
         case "response.text.delta", "response.audio_transcript.delta":
             // True deltas, unlike the snapshot events below.
             let value = delta()
-            if !value.isEmpty { onEvent?(.translationDelta(value)) }
+            if !value.isEmpty { emit(.translationDelta(value)) }
 
         case "response.text.text", "response.audio_transcript.text":
             let confirmed = event["text"] as? String ?? ""
             let stash = event["stash"] as? String ?? ""
             let value = confirmed + stash
-            if !value.isEmpty { onEvent?(.translation(value)) }
+            if !value.isEmpty { emit(.translation(value)) }
 
         case "response.text.done", "response.audio_transcript.done":
             let value = event["text"] as? String
                 ?? event["transcript"] as? String ?? ""
-            if !value.isEmpty { onEvent?(.translationComplete(value)) }
+            emit(.translationComplete(value))
 
         case "response.audio.delta":
             if let encoded = event["delta"] as? String,
                let audio = Data(base64Encoded: encoded) {
-                onEvent?(.audio(audio))
+                emit(.audio(audio))
             }
 
+        case "response.audio.done":
+            emit(.audioComplete)
+
         case "input_audio_buffer.speech_started":
-            onEvent?(.speechStarted)
+            BridgeLog.socket.notice("[\(self.diagnosticLabel, privacy: .public)] speech started stream=\(self.streamID, privacy: .public) item=\(identity.itemID ?? "?", privacy: .public) audio_ms=\(identity.audioMS ?? -1)")
+            emit(.speechStarted)
 
         case "input_audio_buffer.speech_stopped":
-            onEvent?(.speechStopped)
+            BridgeLog.socket.notice("[\(self.diagnosticLabel, privacy: .public)] speech stopped stream=\(self.streamID, privacy: .public) item=\(identity.itemID ?? "?", privacy: .public) audio_ms=\(identity.audioMS ?? -1)")
+            emit(.speechStopped)
 
         case "session.finished":
-            onEvent?(.finished)
+            emit(.finished)
             resumeFinish()
             // Unsolicited, this is the service closing a session that went
             // quiet — the exact case where a pause in the conversation
@@ -1202,6 +1229,8 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     // MARK: - testing
 
     #if DEBUG
+    func receiveFrameForTesting(_ frame: String) { handle(frame) }
+
     /// Drives the across-a-drop audio buffer without a socket.
     ///
     /// The reconnect itself needs a live service to exercise, but the part
