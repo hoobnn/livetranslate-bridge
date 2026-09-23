@@ -1017,6 +1017,9 @@ struct InterfaceLanguagePersistenceTests {
         let original = store.language
         defer { store.language = original }
 
+        // didSet skips unchanged values, and the starting language follows the
+        // system locale; start from Chinese so the next assignment is a change.
+        store.language = .chinese
         store.language = .english
         #expect(defaults.string(forKey: "appLanguage") == "en")
 
