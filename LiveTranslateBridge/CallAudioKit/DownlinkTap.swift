@@ -3,7 +3,13 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
-/// Captures the far end of a call by tapping the audio daemon's output.
+/// Captures the far end of a call by tapping the selected app's output.
+///
+/// The tap follows bundle IDs rather than process objects (macOS 26+): it is
+/// created once per session, covers every helper process that renders for
+/// the app, and keeps capturing when those processes exit and relaunch. So
+/// the first syllable after the app resumes playing is not lost to a
+/// tap/aggregate rebuild, and a muted source stays muted throughout.
 ///
 /// A tap is not readable on its own; it has to be wrapped in an aggregate
 /// device. Both objects are process-global in the Core Audio server, so they
@@ -11,15 +17,7 @@ import Foundation
 /// Everything here is built around making that impossible: the ids are torn
 /// down in `deinit`, on explicit `stop()`, and any stale aggregates left by a
 /// previous run are swept on the next `start()`.
-@available(macOS 14.2, *)
 nonisolated public final class DownlinkTap: @unchecked Sendable {
-    public struct Buffer: @unchecked Sendable {
-        public let samples: UnsafePointer<Float>
-        public let frameCount: Int
-        public let channelCount: Int
-        public let sampleRate: Double
-    }
-
     private static let aggregatePrefix = "call-audio-bridge-agg"
     private static let tapNamePrefix = "call-audio-bridge-tap"
 
@@ -29,24 +27,24 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
     private let lock = NSLock()
 
     public private(set) var format: AVAudioFormat?
-    public var onBuffer: (@Sendable (Buffer) -> Void)?
+    public private(set) var bundleIDs: [String] = []
+    /// Read once at `start()`; the IO block captures the handler directly so the
+    /// realtime thread never touches this object.
+    public var onBuffer: (@Sendable (CapturedAudio) -> Void)?
 
     public init() {}
     deinit { teardown() }
 
-    public func start(
-        processObjectID: AudioObjectID,
-        muteSource: Bool = false
-    ) throws {
+    public func start(bundleIDs: [String], muteSource: Bool = false) throws {
         lock.lock()
         defer { lock.unlock() }
-        guard tapID == 0 else { return }
+        guard tapID == 0, !bundleIDs.isEmpty else { return }
 
         Self.sweepStaleAggregates()
 
-        let description = CATapDescription(
-            stereoMixdownOfProcesses: [processObjectID]
-        )
+        let description = CATapDescription(stereoMixdownOfProcesses: [])
+        description.bundleIDs = bundleIDs
+        description.isProcessRestoreEnabled = true
         description.name = "\(Self.tapNamePrefix)-\(getpid())"
         description.isPrivate = true
         // When the original is routed through our mixer, suppress the app's
@@ -66,8 +64,25 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
             throw CallAudioError("tap has no UID")
         }
 
+        // The tap's own format is authoritative; the aggregate's stream format
+        // is derived from it and can lag behind during device changes.
+        var asbd = AudioStreamBasicDescription()
+        var formatAddr = AudioObject.address(kAudioTapPropertyFormat)
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        let fmtStatus = AudioObjectGetPropertyData(newTap, &formatAddr, 0, nil, &size, &asbd)
+        guard fmtStatus == noErr else {
+            teardownLocked()
+            throw CallAudioError.status("read tap format", fmtStatus)
+        }
+        guard asbd.mFormatID == kAudioFormatLinearPCM,
+              asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+              asbd.mBitsPerChannel == 32, asbd.mChannelsPerFrame > 0 else {
+            teardownLocked()
+            throw CallAudioError("unsupported tap format: \(asbd)")
+        }
+
         let aggregateUID = "\(Self.aggregatePrefix)-\(getpid())"
-        let description2: [String: Any] = [
+        let aggregateDescription: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "CallAudioBridge",
             kAudioAggregateDeviceUIDKey as String: aggregateUID,
             kAudioAggregateDeviceIsPrivateKey as String: 1,
@@ -82,7 +97,7 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
 
         var newAggregate: AudioObjectID = 0
         let aggStatus = AudioHardwareCreateAggregateDevice(
-            description2 as CFDictionary, &newAggregate
+            aggregateDescription as CFDictionary, &newAggregate
         )
         guard aggStatus == noErr, newAggregate != 0 else {
             teardownLocked()
@@ -90,49 +105,26 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
         }
         aggregateID = newAggregate
 
-        var streamAddr = AudioObject.address(
-            kAudioDevicePropertyStreamFormat, scope: kAudioObjectPropertyScopeInput
-        )
-        var asbd = AudioStreamBasicDescription()
-        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        let fmtStatus = AudioObjectGetPropertyData(
-            newAggregate, &streamAddr, 0, nil, &size, &asbd
-        )
-        guard fmtStatus == noErr else {
-            teardownLocked()
-            throw CallAudioError.status("read aggregate stream format", fmtStatus)
-        }
-
         let channels = Int(asbd.mChannelsPerFrame)
+        let interleaved = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
+        let sampleRate = asbd.mSampleRate
         format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: asbd.mSampleRate,
+            sampleRate: sampleRate,
             channels: AVAudioChannelCount(channels),
-            interleaved: true
+            interleaved: interleaved
         )
 
-        let sampleRate = asbd.mSampleRate
+        let handler = onBuffer
         var procID: AudioDeviceIOProcID?
         let procStatus = AudioDeviceCreateIOProcIDWithBlock(
             &procID, newAggregate, nil
-        ) { [weak self] _, inputData, _, _, _ in
-            guard let self, let handler = self.onBuffer else { return }
-            let list = UnsafeMutableAudioBufferListPointer(
-                UnsafeMutablePointer(mutating: inputData)
-            )
-            guard let first = list.first,
-                  first.mDataByteSize > 0,
-                  let raw = first.mData else { return }
-            let bufferChannels = max(1, Int(first.mNumberChannels))
-            let frames = Int(first.mDataByteSize)
-                / MemoryLayout<Float>.size / bufferChannels
-            guard frames > 0 else { return }
-            handler(Buffer(
-                samples: raw.assumingMemoryBound(to: Float.self),
-                frameCount: frames,
-                channelCount: bufferChannels,
-                sampleRate: sampleRate
-            ))
+        ) { _, inputData, _, _, _ in
+            guard let handler, let buffer = CapturedAudio(
+                buffers: inputData, channelCount: channels,
+                sampleRate: sampleRate, interleaved: interleaved
+            ) else { return }
+            handler(buffer)
         }
         guard procStatus == noErr, let procID else {
             teardownLocked()
@@ -145,8 +137,9 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
             teardownLocked()
             throw CallAudioError.status("AudioDeviceStart", startStatus)
         }
+        self.bundleIDs = bundleIDs
         BridgeLog.tap.notice(
-            "tap running: \(asbd.mSampleRate, privacy: .public) Hz \(channels, privacy: .public) ch"
+            "tap running for \(bundleIDs.joined(separator: ","), privacy: .public): \(sampleRate, privacy: .public) Hz \(channels, privacy: .public) ch"
         )
     }
 
@@ -177,6 +170,7 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
             tapID = 0
         }
         format = nil
+        bundleIDs = []
     }
 
     /// Removes aggregates this tool created in a previous run that died before

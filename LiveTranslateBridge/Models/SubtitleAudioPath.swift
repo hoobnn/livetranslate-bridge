@@ -51,10 +51,7 @@ extension SubtitleModel {
             }
         }
 
-        @available(macOS 14.2, *)
-        func enqueue(_ buffer: DownlinkTap.Buffer) { queue.enqueue(buffer) }
-
-        func enqueue(_ buffer: AVAudioPCMBuffer) { queue.enqueue(buffer) }
+        func enqueue(_ buffer: CapturedAudio) { queue.enqueue(buffer) }
 
         private func process(_ buffer: AVAudioPCMBuffer) {
             if resampler == nil || sourceFormat != buffer.format {
@@ -78,16 +75,10 @@ extension SubtitleModel {
         /// Hands the converted PCM to the socket in chunks no longer than
         /// `Self.chunkBytes`.
         ///
-        /// The microphone arrives in 100 ms buffers — the floor the tap API
-        /// allows — and appending one whole is a tenth of a second the
-        /// service cannot see the end of the utterance in, because the bytes
-        /// that would show it silent are still on this side. Splitting costs
-        /// nothing: the same bytes go out, the socket already serialises its
-        /// sends, and the service's own guidance is chunks in this range.
-        ///
-        /// A buffer shorter than the chunk — which is every buffer on the
-        /// tap side, at ~10 ms — is sent as it came, so the common path adds
-        /// no copy at all.
+        /// Both capture sides now deliver IO-sized buffers (~10 ms), so this
+        /// only splits the rare oversized block — a device configured with a
+        /// large IO buffer. Anything shorter than the chunk is sent as it
+        /// came, so the common path adds no copy at all.
         private func send(_ pcm: Data, to client: TranslationClient) {
             guard pcm.count > Self.chunkBytes else {
                 client.sendAudio(pcm)

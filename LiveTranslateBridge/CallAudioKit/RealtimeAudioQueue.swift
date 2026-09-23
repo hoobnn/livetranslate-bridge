@@ -71,20 +71,34 @@ nonisolated final class RealtimeAudioQueue: @unchecked Sendable {
         workerQueue.async(execute: work)
     }
 
-    @available(macOS 14.2, *)
-    func enqueue(_ buffer: DownlinkTap.Buffer) {
+    /// Copies a realtime capture callback's buffers. Interleaved audio is one
+    /// buffer; deinterleaved audio is one buffer per channel.
+    func enqueue(_ buffer: CapturedAudio) {
         let sampleCount = buffer.frameCount * buffer.channelCount
         enqueue(
             sampleRate: buffer.sampleRate,
             channelCount: buffer.channelCount,
             frameCount: buffer.frameCount,
-            interleaved: true,
+            interleaved: buffer.interleaved,
             sampleCount: sampleCount
         ) { destination in
-            destination.copyMemory(
-                from: UnsafeRawPointer(buffer.samples),
-                byteCount: sampleCount * MemoryLayout<Float>.size
+            let list = UnsafeMutableAudioBufferListPointer(
+                UnsafeMutablePointer(mutating: buffer.buffers)
             )
+            if buffer.interleaved {
+                destination.copyMemory(
+                    from: UnsafeRawPointer(list[0].mData!),
+                    byteCount: sampleCount * MemoryLayout<Float>.size
+                )
+            } else {
+                let channelBytes = buffer.frameCount * MemoryLayout<Float>.size
+                for channel in 0..<buffer.channelCount {
+                    destination.advanced(by: channel * channelBytes).copyMemory(
+                        from: UnsafeRawPointer(list[channel].mData!),
+                        byteCount: channelBytes
+                    )
+                }
+            }
         }
     }
 

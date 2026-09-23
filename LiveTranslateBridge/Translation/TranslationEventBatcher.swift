@@ -116,8 +116,7 @@ nonisolated final class TranslationPlaybackPath: @unchecked Sendable {
         player?.setVolumes(original: original, translation: translation)
     }
 
-    @available(macOS 14.2, *)
-    func enqueueOriginal(_ buffer: DownlinkTap.Buffer) { originalQueue.enqueue(buffer) }
+    func enqueueOriginal(_ buffer: CapturedAudio) { originalQueue.enqueue(buffer) }
 
     func enqueueOriginal(_ buffer: AVAudioPCMBuffer) { originalQueue.enqueue(buffer) }
 

@@ -31,6 +31,14 @@ nonisolated public final class Resampler: @unchecked Sendable {
                 "no conversion path from \(sourceFormat) to 16 kHz mono Int16"
             )
         }
+        // Without `downmix` a stereo → mono converter keeps channel 0 only, so
+        // anything panned right (a meeting participant, a video's dialogue
+        // track) never reached ASR. Downmix averages every channel instead.
+        converter.downmix = true
+        // Decimating 48 → 16 kHz: a steeper anti-alias filter keeps 8–24 kHz
+        // content from folding into the speech band. The cost at 16 kHz mono
+        // is negligible.
+        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
         self.sourceFormat = sourceFormat
         self.targetFormat = targetFormat
         self.converter = converter
@@ -99,63 +107,7 @@ nonisolated public final class Resampler: @unchecked Sendable {
         )
     }
 
-    /// Wraps an interleaved float buffer from the process tap, which arrives as
-    /// a raw pointer rather than an `AVAudioPCMBuffer`.
-    ///
-    /// The staging buffer is reused for the same reason as the output one:
-    /// the tap delivers a steady frame count on a realtime thread, so
-    /// building a format and a buffer per callback was pure per-frame
-    /// allocation on the hottest path in the app.
-    @available(macOS 14.2, *)
-    public func convert(tapBuffer: DownlinkTap.Buffer) throws -> Data {
-        let frames = AVAudioFrameCount(tapBuffer.frameCount)
-
-        // Held for the copy *and* the conversion that reads it back: the
-        // staging buffer is shared state, and handing it to `convert` after
-        // releasing the lock would let a second callback overwrite the
-        // samples mid-conversion.
-        lock.lock()
-        defer { lock.unlock() }
-
-        // The tap's format is fixed for the life of the aggregate device, so
-        // a mismatch here means the device changed under us and the cached
-        // buffer describes the wrong stream.
-        let reusable = stagingBuffer.flatMap { buffer -> AVAudioPCMBuffer? in
-            guard buffer.format.sampleRate == tapBuffer.sampleRate,
-                  buffer.format.channelCount
-                      == AVAudioChannelCount(tapBuffer.channelCount),
-                  buffer.frameCapacity >= frames else { return nil }
-            return buffer
-        }
-
-        let staging: AVAudioPCMBuffer
-        if let reusable {
-            staging = reusable
-        } else {
-            guard let format = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: tapBuffer.sampleRate,
-                channels: AVAudioChannelCount(tapBuffer.channelCount),
-                interleaved: true
-            ), let fresh = AVAudioPCMBuffer(
-                pcmFormat: format, frameCapacity: frames
-            ) else {
-                throw CallAudioError("cannot stage tap buffer for conversion")
-            }
-            stagingBuffer = fresh
-            staging = fresh
-        }
-        staging.frameLength = frames
-        let sampleCount = tapBuffer.frameCount * tapBuffer.channelCount
-        staging.floatChannelData![0].update(
-            from: tapBuffer.samples, count: sampleCount
-        )
-
-        return try convertLocked(staging)
-    }
-
-    /// The reused conversion output and tap staging buffers, both guarded by
-    /// `lock` alongside the converter that reads and writes them.
+    /// The reused conversion output buffer, guarded by `lock` alongside the
+    /// converter that writes it.
     private var outputBuffer: AVAudioPCMBuffer?
-    private var stagingBuffer: AVAudioPCMBuffer?
 }

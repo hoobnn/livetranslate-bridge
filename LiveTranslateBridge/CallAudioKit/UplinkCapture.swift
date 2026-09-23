@@ -18,17 +18,19 @@ import Foundation
 /// microphone here keeps the two apart. See `AudioInputDevice`.
 nonisolated public final class UplinkCapture: @unchecked Sendable {
     private let engine = AVAudioEngine()
-    private var installed = false
+    private var sink: AVAudioSinkNode?
 
     public private(set) var format: AVAudioFormat?
-    public var onBuffer: (@Sendable (AVAudioPCMBuffer) -> Void)?
+    /// Called on the realtime IO thread with the device's own IO buffer
+    /// (typically 512 frames, ~11 ms). Read once at `start()`.
+    public var onBuffer: (@Sendable (CapturedAudio) -> Void)?
 
     public init() {}
     deinit { stop() }
 
     /// Opens the engine against `device`, or the system default when nil.
     public func start(device: AudioInputDevice? = nil) throws {
-        guard !installed else { return }
+        guard sink == nil else { return }
         guard case .granted = AudioCapturePermission.current else {
             throw CallAudioError(
                 "no microphone permission (status: "
@@ -76,48 +78,39 @@ nonisolated public final class UplinkCapture: @unchecked Sendable {
         }
         format = inputFormat
 
-        let tap: @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void = {
-            [weak self] buffer, _ in
-            self?.onBuffer?(buffer)
+        // A sink node receives the input unit's IO buffers on the realtime
+        // thread as they arrive. `installTap` instead batches into blocks of
+        // at least 100 ms on a non-realtime thread, which held the end of
+        // every utterance back from the service by that much.
+        let handler = onBuffer
+        let channels = Int(inputFormat.channelCount)
+        let sampleRate = inputFormat.sampleRate
+        let interleaved = inputFormat.isInterleaved
+        let sink = AVAudioSinkNode { _, _, list in
+            if let handler, let buffer = CapturedAudio(
+                buffers: list, channelCount: channels,
+                sampleRate: sampleRate, interleaved: interleaved
+            ) { handler(buffer) }
+            return noErr
         }
-        // macOS 27 deprecated the non-throwing `installTap` in favour of a
-        // variant that reports why a tap was refused instead of trapping. It
-        // ships `NS_REFINED_FOR_SWIFT` with no overlay in the 27.0 SDK, so the
-        // only spelling available is the underscored one, whose `error:` slot
-        // imports as `()` and surfaces through `throws`. Ugly, but it is the
-        // non-deprecated path; swap it for `installTap(...) throws` once the
-        // SDK exposes a refined wrapper.
-        //
-        // The new API documents a supported buffer range of [100, 400] ms,
-        // and the old 2048 frames was 43 ms at 48 kHz — under that floor. Ask
-        // for the low end of the range so latency stays as close to the old
-        // behaviour as the contract allows, computed from the device's own
-        // rate rather than assuming 48 kHz.
-        let bufferSize = AVAudioFrameCount(inputFormat.sampleRate / 10)
-        do {
-            try input.__installTap(
-                onBus: 0, bufferSize: bufferSize, format: inputFormat,
-                error: (), block: tap
-            )
-        } catch {
-            throw CallAudioError("cannot install microphone tap: \(error)")
-        }
-        installed = true
+        engine.attach(sink)
+        engine.connect(input, to: sink, format: inputFormat)
+        self.sink = sink
 
         do {
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
-            installed = false
+            engine.detach(sink)
+            self.sink = nil
             throw CallAudioError("cannot start audio engine: \(error)")
         }
     }
 
     public func stop() {
-        guard installed else { return }
+        guard let sink else { return }
         engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        installed = false
+        engine.detach(sink)
+        self.sink = nil
         format = nil
     }
 }

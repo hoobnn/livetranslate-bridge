@@ -738,7 +738,7 @@ final class SubtitleModel {
     private var clients: [Direction: TranslationClient] = [:]
     @ObservationIgnored private var eventBatchers: [Direction: TranslationEventBatcher] = [:]
     @ObservationIgnored private var startupTask: Task<Void, Never>?
-    @ObservationIgnored private var routeTask: Task<Void, Never>?
+    @ObservationIgnored private var routeWatcher: AudioRouteWatcher?
     @ObservationIgnored private var sessionGeneration = 0
     var audioNotice: String?
 
@@ -748,27 +748,29 @@ final class SubtitleModel {
     }
 
     private func watchRoutes() {
-        guard routeTask == nil else { return }
+        guard routeWatcher == nil else { return }
         let input = scope.captures(.local) ? inputDeviceUID : nil
         let remote = scope.captures(.remote) ? remoteOutputDeviceUID : nil
         let local = scope.captures(.local) && !outputDeviceUID.isEmpty ? outputDeviceUID : nil
-        routeTask = Task { [weak self] in
-            var previous: AudioRouteSnapshot?
-            while !Task.isCancelled {
-                let snapshot = await Task.detached(priority: .utility) {
-                    AudioRouteSnapshot.read(inputUID: input, remoteUID: remote, localUID: local)
-                }.value
-                guard !Task.isCancelled, let self, self.isRunning else { return }
-                if let previous, previous != snapshot {
-                    BridgeLog.audio.notice("selected audio endpoint changed; rebuilding routes")
-                    self.stop(preserveRouteWatcher: true)
-                    self.start(preserveTranscript: true)
-                }
-                previous = snapshot
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+        let watcher = AudioRouteWatcher {
+            AudioRouteSnapshot.read(inputUID: input, remoteUID: remote, localUID: local)
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning else { return }
+                BridgeLog.audio.notice("selected audio endpoint changed; rebuilding routes")
+                self.stop(preserveRouteWatcher: true)
+                self.start(preserveTranscript: true)
             }
         }
+        routeWatcher = watcher
+        watcher.start()
     }
+
+    private func stopWatchingRoutes() {
+        routeWatcher?.stop()
+        routeWatcher = nil
+    }
+
     private let remotePlaybackPath = TranslationPlaybackPath()
     private let localPlaybackPath = TranslationPlaybackPath()
 
@@ -825,8 +827,7 @@ final class SubtitleModel {
             guard !Task.isCancelled, let self, self.isRunning else { return }
             guard prepared.0.isComplete else {
                 self.isRunning = false
-                self.routeTask?.cancel()
-                self.routeTask = nil
+                self.stopWatchingRoutes()
                 self.status = .failed(StartFailure.missingCredentials.message)
                 return
             }
@@ -1021,7 +1022,7 @@ final class SubtitleModel {
     }
 
     func stop(preserveRouteWatcher: Bool = false) {
-        if !preserveRouteWatcher { routeTask?.cancel(); routeTask = nil }
+        if !preserveRouteWatcher { stopWatchingRoutes() }
         sessionGeneration &+= 1
         guard isRunning else { return }
         finishServerEntries(.remote, status: "interrupted")
@@ -1105,14 +1106,13 @@ final class SubtitleModel {
     // MARK: - audio
 
     /// Called on the Core Audio IO thread, never on the main actor.
-    @available(macOS 14.2, *)
-    private nonisolated func forward(tapBuffer: DownlinkTap.Buffer) {
+    private nonisolated func forward(tapBuffer: CapturedAudio) {
         downlinkPath.enqueue(tapBuffer)
         remotePlaybackPath.enqueueOriginal(tapBuffer)
     }
 
     /// Likewise on the microphone's IO thread.
-    private nonisolated func forward(micBuffer: AVAudioPCMBuffer) {
+    private nonisolated func forward(micBuffer: CapturedAudio) {
         uplinkPath.enqueue(micBuffer)
         localPlaybackPath.enqueueOriginal(micBuffer)
     }

@@ -205,3 +205,23 @@ struct AudioQueueGenerationTests {
         #expect(dropped.wait(timeout: .now() + 3) == .success)
     }
 }
+
+struct CaptureConversionTests {
+    /// A stereo → mono converter without downmix keeps channel 0 only, so a
+    /// source panned right reached ASR as silence.
+    @Test func rightOnlyStereoReachesRecognition() throws {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        let buffer = tone(rate: 48_000, channels: 2)
+        buffer.floatChannelData![0].update(repeating: 0, count: Int(buffer.frameLength))
+        let pcm = try Resampler(sourceFormat: format).convert(buffer)
+        let peak = pcm.withUnsafeBytes { raw in raw.bindMemory(to: Int16.self).map { abs(Int32($0)) }.max() ?? 0 }
+        #expect(peak > 1000)
+    }
+
+    /// Helpers nested in an app bundle belong to that app, not to themselves.
+    @Test func helperProcessesResolveToOutermostApp() {
+        let helper = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/140/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
+        #expect(AppOwnership.outermostApp(in: helper)?.path == "/Applications/Google Chrome.app")
+        #expect(AppOwnership.outermostApp(in: "/usr/libexec/avconferenced") == nil)
+    }
+}

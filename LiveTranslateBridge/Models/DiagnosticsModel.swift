@@ -68,7 +68,6 @@ final class DiagnosticsModel {
     private(set) var fileLines: [FileLine] = []
     private(set) var isStreamingFile = false
 
-    private var monitor: CallMonitor?
     private var downlinkTap: DownlinkTap?
     private var uplinkCapture: UplinkCapture?
     /// Whether a running session currently holds the microphone.
@@ -153,7 +152,7 @@ final class DiagnosticsModel {
         inputDevice: AudioInputDevice? = nil,
         sessionOwnsInput: Bool = false
     ) {
-        guard !isMetering, #available(macOS 14.2, *) else { return }
+        guard !isMetering else { return }
         isMetering = true
         self.sessionOwnsInput = sessionOwnsInput
 
@@ -165,8 +164,8 @@ final class DiagnosticsModel {
         meterTimer = timer
 
         // The microphone meter is useful without a call, so it must not be
-        // coupled to CallMonitor. The downlink tap still follows the call
-        // daemon because there is no output process to tap while it is idle.
+        // coupled to the source app. The app tap follows bundle IDs, so it is
+        // opened once and reads silence until the app plays.
         meterInputDevice = inputDevice
         if sessionOwnsInput {
             BridgeLog.audio.notice(
@@ -176,20 +175,20 @@ final class DiagnosticsModel {
             startUplinkMeter(device: inputDevice)
         }
 
-        let monitor = CallMonitor(targetBundleID: sourceBundleID)
-        monitor.onChange = { [weak self] state in
-            Task { @MainActor [weak self] in self?.applyMeteringCallState(state) }
+        let tap = DownlinkTap()
+        tap.onBuffer = { [meter] buffer in meter.record(downlink: buffer.peak) }
+        do {
+            try tap.start(bundleIDs: AudioSourceApplication.tapBundleIDs(for: sourceBundleID))
+            downlinkTap = tap
+        } catch {
+            BridgeLog.tap.error("diagnostic downlink tap did not start: \("\(error)", privacy: .public)")
         }
-        self.monitor = monitor
-        monitor.start()
     }
 
     func stopMetering() {
         guard isMetering else { return }
         meterTimer?.invalidate()
         meterTimer = nil
-        monitor?.stop()
-        monitor = nil
         downlinkTap?.stop()
         downlinkTap = nil
         uplinkCapture?.stop()
@@ -248,44 +247,13 @@ final class DiagnosticsModel {
     private func openUplinkMeter(device: AudioInputDevice?) {
         guard uplinkCapture == nil, !sessionOwnsInput else { return }
         let capture = UplinkCapture()
-        capture.onBuffer = { [meter] buffer in
-            guard let data = buffer.floatChannelData?[0] else { return }
-            var peak: Float = 0
-            vDSP_maxmgv(data, 1, &peak, vDSP_Length(buffer.frameLength))
-            meter.record(uplink: peak)
-        }
+        capture.onBuffer = { [meter] buffer in meter.record(uplink: buffer.peak) }
         do {
             try capture.start(device: device)
             uplinkCapture = capture
             BridgeLog.audio.notice("microphone meter running")
         } catch {
             BridgeLog.audio.error("microphone meter did not start: \("\(error)", privacy: .public)")
-        }
-    }
-
-    private func applyMeteringCallState(_ state: CallState) {
-        guard isMetering else { return }
-        switch state {
-        case .idle:
-            downlinkTap?.stop()
-            downlinkTap = nil
-        case .active(let process):
-            guard downlinkTap == nil else { return }
-            let tap = DownlinkTap()
-            tap.onBuffer = { [meter] buffer in
-                var peak: Float = 0
-                vDSP_maxmgv(
-                    buffer.samples, 1, &peak,
-                    vDSP_Length(buffer.frameCount * buffer.channelCount)
-                )
-                meter.record(downlink: peak)
-            }
-            do {
-                try tap.start(processObjectID: process.objectID)
-                downlinkTap = tap
-            } catch {
-                BridgeLog.tap.error("diagnostic downlink tap did not start: \("\(error)", privacy: .public)")
-            }
         }
     }
 
@@ -300,7 +268,6 @@ final class DiagnosticsModel {
     // MARK: - clean
 
     func sweepStaleAggregates() {
-        guard #available(macOS 14.2, *) else { return }
         DownlinkTap.sweepStaleAggregates()
         didSweep = true
     }

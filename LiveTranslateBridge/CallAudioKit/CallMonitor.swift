@@ -37,7 +37,7 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
     public let targetBundleID: String
     private let queue = DispatchQueue(label: "call-audio-bridge.monitor")
     private var listenerBlock: AudioObjectPropertyListenerBlock?
-    private var watchedProcess: AudioObjectID?
+    private var watchedProcesses: [AudioObjectID] = []
     private var processListener: AudioObjectPropertyListenerBlock?
     private var pollTimer: DispatchSourceTimer?
     private var state: CallState = .idle
@@ -90,31 +90,33 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
         if status == noErr { processListener = block }
     }
 
-    /// The IO-state notification is per-process, so it has to be re-attached
-    /// whenever the daemon's object id changes (it does across reboots).
-    private func installIOListener(for objectID: AudioObjectID) {
+    /// The IO-state notification is per-process, so it is attached to every
+    /// object rendering for the app and re-attached whenever that set changes.
+    private func installIOListeners(for objectIDs: [AudioObjectID]) {
         removeIOListener()
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             self?.reevaluate()
         }
-        var runningAddr = AudioObject.address(kAudioProcessPropertyIsRunning)
-        var outputAddr = AudioObject.address(kAudioProcessPropertyIsRunningOutput)
-        let a = AudioObjectAddPropertyListenerBlock(objectID, &runningAddr, queue, block)
-        let b = AudioObjectAddPropertyListenerBlock(objectID, &outputAddr, queue, block)
-        if a == noErr || b == noErr {
-            listenerBlock = block
-            watchedProcess = objectID
+        for objectID in objectIDs {
+            var runningAddr = AudioObject.address(kAudioProcessPropertyIsRunning)
+            var outputAddr = AudioObject.address(kAudioProcessPropertyIsRunningOutput)
+            AudioObjectAddPropertyListenerBlock(objectID, &runningAddr, queue, block)
+            AudioObjectAddPropertyListenerBlock(objectID, &outputAddr, queue, block)
         }
+        listenerBlock = block
+        watchedProcesses = objectIDs
     }
 
     private func removeIOListener() {
-        guard let block = listenerBlock, let objectID = watchedProcess else { return }
-        var runningAddr = AudioObject.address(kAudioProcessPropertyIsRunning)
-        var outputAddr = AudioObject.address(kAudioProcessPropertyIsRunningOutput)
-        AudioObjectRemovePropertyListenerBlock(objectID, &runningAddr, queue, block)
-        AudioObjectRemovePropertyListenerBlock(objectID, &outputAddr, queue, block)
+        guard let block = listenerBlock else { return }
+        for objectID in watchedProcesses {
+            var runningAddr = AudioObject.address(kAudioProcessPropertyIsRunning)
+            var outputAddr = AudioObject.address(kAudioProcessPropertyIsRunningOutput)
+            AudioObjectRemovePropertyListenerBlock(objectID, &runningAddr, queue, block)
+            AudioObjectRemovePropertyListenerBlock(objectID, &outputAddr, queue, block)
+        }
         listenerBlock = nil
-        watchedProcess = nil
+        watchedProcesses = []
     }
 
     /// Notifications can be missed; a 2s poll bounds how long that costs us.
@@ -133,11 +135,10 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
     // MARK: - state
 
     private func reevaluate() {
+        let owned = AudioProcessObject.owned(by: targetBundleID).map(\.objectID)
+        let membershipChanged = owned != watchedProcesses
+        if membershipChanged { installIOListeners(for: owned) }
         let found = Self.findAudioProcess(bundleID: targetBundleID)
-
-        if let found, found.objectID != watchedProcess {
-            installIOListener(for: found.objectID)
-        }
 
         let newState: CallState
         if let found, found.isActive {
@@ -146,7 +147,11 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
             newState = .idle
         }
 
-        guard newState != state else { return }
+        guard newState != state else {
+            // Same state, new helper set: the session may need a wider tap.
+            if membershipChanged { onChange?(newState) }
+            return
+        }
         state = newState
         switch newState {
         case .active(let process):
@@ -168,25 +173,17 @@ nonisolated public final class CallMonitor: @unchecked Sendable {
     }
 
     /// Prefer an actively-rendering object when an app has several audio
-    /// process objects, but retain an idle one so listeners are attached before
-    /// playback starts.
+    /// process objects — helpers included — but retain an idle one so
+    /// listeners are attached before playback starts.
     public static func findAudioProcess(bundleID: String) -> CallAudioProcess? {
-        let ids = AudioObject.objectList(
-            AudioObjectID(kAudioObjectSystemObject),
-            kAudioHardwarePropertyProcessObjectList
-        )
         var fallback: CallAudioProcess?
-        for id in ids {
-            guard AudioObject.string(id, kAudioProcessPropertyBundleID) == bundleID
-            else { continue }
+        for object in AudioProcessObject.owned(by: bundleID) {
             let process = CallAudioProcess(
-                objectID: id,
-                pid: AudioObject.value(id, kAudioProcessPropertyPID, default: pid_t(-1)),
-                bundleID: bundleID,
-                isRunningInput: AudioObject.value(
-                    id, kAudioProcessPropertyIsRunningInput, default: UInt32(0)) == 1,
-                isRunningOutput: AudioObject.value(
-                    id, kAudioProcessPropertyIsRunningOutput, default: UInt32(0)) == 1
+                objectID: object.objectID,
+                pid: object.pid,
+                bundleID: object.bundleID,
+                isRunningInput: object.isRunningInput,
+                isRunningOutput: object.isRunningOutput
             )
             if process.isRunningOutput { return process }
             if fallback == nil { fallback = process }
