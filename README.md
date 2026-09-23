@@ -1,166 +1,69 @@
 # LiveTranslateBridge
 
-macOS app：选择任意已注册到 Core Audio 的应用声音或系统输入，接 Qwen 实时转录 / 翻译，并把原声与模型译声按独立音量路由到指定输出设备。
+[![CI](https://github.com/hoobnn/livetranslate-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/hoobnn/livetranslate-bridge/actions/workflows/ci.yml)
 
-前身是 `call-audio-bridge` 的命令行原型，本仓库把它迁成带界面的 App，CLI 的各项命令改为 App 内的诊断面板。
+一个 macOS App：采集任意应用的声音（接力通话、会议、浏览器、播放器等）以及麦克风，接入 Qwen 实时模型做双向转录和翻译，再把原声和译声按各自的音量送到指定的输出设备。
 
-## 背景
+## 功能
 
-Mac 接听 iPhone 来电走的是 Continuity 接力通话——iPhone 保持蜂窝语音链路，把音频通过 Wi-Fi 上的 Apple 私有协议转发给 Mac。Mac 只是远程的麦克风 + 扬声器端点。
+- **双向翻译**：对方的声音译成我的语言，我的声音译成对方的语言，字幕按时间顺序交错显示在左右两栏。
+- **转录模式**：只记录原话，不翻译也不播报，两侧可以选同一种语言。
+- **采集范围**：可选双向、只听对方（仅应用声音）或只听我（仅麦克风）。
+- **音频路由**：「我听到的声音」和「对方听到的声音」分别指定输出设备，原声和译声音量各自可调，范围 0–200%。可开启“译声播放时降低原声音量”。
+- **音色复刻**：可选择用原说话人的音色播报译文。
+- **诊断面板**：查看声音源进程状态和两侧电平，用样本离线回放测试翻译链路，清理异常退出后残留的聚合设备。
 
-实测确认（见 `docs/findings.md`）：
+## 安装
 
-- 通话音频由 `/usr/libexec/avconferenced` 渲染，**不是** FaceTime.app，也不是 `callservicesd`
-- 进程 tap 拿到的只有远端下行，不含本机麦克风，两路可独立处理
-- 下行 48kHz 立体声，电平约 −18.7 dBFS，可直接降采样喂 ASR
+需要 macOS 27 或更高版本，以及 Apple Silicon 芯片。
 
-## 要求
+```bash
+brew install --cask hoobnn/tap/livetranslate-bridge
+```
 
-macOS 26+（按 bundle ID 跟随进程的 Core Audio tap 需要 `CATapDescription.bundleIDs`）。工程当前的 deployment target 是 27.0，在 macOS 27 上开发验证。
-
-需要百炼（阿里云 Model Studio）的 API Key 与业务空间 ID：<https://bailian.console.aliyun.com/>
+也可以从 [Releases](https://github.com/hoobnn/livetranslate-bridge/releases) 下载已签名并经过公证的 dmg。
 
 ## 使用
 
-用 Xcode 打开 `LiveTranslateBridge.xcodeproj` 运行。
+1. 在[阿里云百炼](https://bailian.console.aliyun.com/)获取 API Key 和业务空间 ID。
+2. 打开设置（⌘,），填入以上两项，保存在登录钥匙串里。
+3. 在「音频路由」中选择声音来源、麦克风和两侧的输出设备。
+4. 回到字幕页，选好两种语言，点「开始」。首次使用时 macOS 会请求系统音频录制和麦克风权限。
 
-首次运行先进「设置」（⌘,）填 API Key 与业务空间 ID，存入登录钥匙串。然后在「音频路由」中选择声音来源、系统输入和两侧输出；回到字幕页选两种语言并点「开始」。默认声音源仍是接力通话的 `avconferenced`，也可换成会议、浏览器、播放器等当前出现在 Core Audio 进程列表中的应用。
+默认声音来源是接力通话进程 `avconferenced`（Mac 接听 iPhone 来电时由它播放通话音频）。
 
-顶部还有「采集」三选一，默认双向：
+### 让对方听到译文
 
-| 采集 | 开什么 | 要不要通话 |
-|---|---|---|
-| 双向 | 所选应用的进程 tap + 麦克风 | 要等待所选应用播放 |
-| 只听对方 | 仅所选应用的进程 tap | 要等待所选应用播放 |
-| 只听我 | 仅麦克风 | **不要** |
+需要一个回环声卡，例如 [BlackHole](https://existential.audio/blackhole/)：
 
-只听对方不会打开麦克风，也就不弹麦克风权限；只听我不开进程 tap，因此**不依赖所选应用**——点「开始」就直接采集，线下会议、口述笔记、当场口译都能用。单边时只建一条 WebSocket，另一条不开。
+1. 把「对方听到的声音」的输出设为回环设备；
+2. 在会议或通话应用里，把输入也设为同一个回环设备；
+3. 本 App 的「系统输入」一定要选真实麦克风，否则会把自己的译声再采集回来。
 
-另外还有「翻译 / 转录」两种模式，默认翻译。转录只把两边说的话按原话记成文字，不译、也不播报，适合只想留个通话记录的场合——**这时两边可以选同一种语言**，同语种通话记录是转录的常见用法，翻译模式下则仍然禁止（把一种语言译成它自己没有意义）。两个语言选择器在转录模式下依然有用：它们把各自方向的 ASR 钉在已知语种上，识别比自动检测更准，切回翻译时也原样还在。
+## 从源码构建
 
-以下说的是翻译模式。
+需要 Xcode 27。
 
-**双向翻译是默认行为，没有开关。** 两种语言一旦选定，两个方向就完全确定了：
-
-- 对方（进程 tap）→ 译成我的语言，显示在字幕板左侧
-- 我（麦克风）→ 译成对方的语言，显示在字幕板右侧
-
-两条链路各有独立的 WebSocket 与断句状态，在同一条时间轴上按先后交错排列。
-
-两个选择器中间的 ⇄ 按钮可以一键互换。把某一侧选成另一侧已有的语言时，两者自动交换而不是变成同一种语言——后者没有可翻译的内容。
-
-调试时也可以用 scheme 的环境变量 `DASHSCOPE_API_KEY` / `DASHSCOPE_WORKSPACE_ID` 覆盖钥匙串里的值。
-
-## 音频路由与双向播报
-
-「设置 → 音频路由」把两侧分成两条互不耦合的路径：
-
-- **我听到的声音**：所选应用的原声 + 该声音的模型译声，默认跟随系统输出，也可以指定耳机、扬声器或其他输出设备。
-- **对方听到的声音**：物理麦克风原声 + 我说话后的模型译声，输出到指定设备；选「不播报」时不接管原有麦克风链路。
-
-两条路径都能分别调节原声和模型译声，范围为 0–200%。输出成功建立后，所选应用的直接输出通过 `CATapMutedWhenTapped` 暂时静音，由 App 回放原声；原声音量即使从 0 启动也是真正静音，随后可以实时调高。输出启动失败时保留源应用直通，并显示提示。转录模式不生成译声。翻译模式保持所选输出的译声流，滑块为 0 只静音播放，因此可以实时恢复译声音量。
-
-原声与译声各由一个 `AVAudioSourceNode` 从无锁环形缓冲拉取，增益在渲染线程逐采样平滑（约 15 ms），因此调音量不会有咔嗒声，超过 100% 也只是限幅器前的乘法。混音经过峰值限幅器。「译声播放时自动降低原声音量」可在开始前开启：远端译声可听期间原声约 40 ms 内降至所设音量的 25%，结束后约 300 ms 内恢复，同样在渲染线程按采样完成。字幕页的「跳过译声」清空两侧待播译声，并跳过当前未结束回复的剩余语音，保留原声和字幕。
-
-原声经 40 ms 抖动缓冲后以固定延迟播放；采集时钟跑快、积压超过 200 ms 时一次性追回 40 ms，欠载时补静音并重新缓冲；译声排队最多 15 秒，超过后跳过当前回复的剩余语音并显示提示，字幕继续更新。该上限是资源与延迟保护，不是逐句无损追赶。
-
-要让会议或通话应用听到「我的原声 + 译声」混音，仍需要回环设备：
-
-1. 安装 [BlackHole](https://existential.audio/blackhole/) 等回环声卡；
-2. 在本 App 的「对方听到的声音」中把输出选为该回环设备；
-3. 在会议 / 通话应用中把输入选为同一个回环设备；
-4. 在本 App 的「系统输入」中明确选择真实麦克风，避免重新采到自己的译声。
-
-选择器只将已识别的 BlackHole、Loopback、Soundflower 标成回环设备，不会因为 USB 声卡有输入和输出就把它误判为回环。已识别的回环设备同时作为采集输入与混音输出时，启动会被阻止。自定义虚拟设备仍需自行确认路由。启用「用原说话人的音色播报」后仍使用 `qwen3.8-livetranslate-flash-realtime`，通过 `enable_voice_clone` 与 `voice_clone_options.frequency` 请求复刻：麦克风方向在会话开始时复刻一次，所选应用方向每次回复前更新音色。关闭时使用同一模型的默认音色，开关复刻不切换模型。所选应用若是音乐播放器，复刻的是识别到的人声，效果取决于音乐中的人声是否清晰。
-
-App 直接绑定用户选择的 Core Audio 输入和输出，但不会修改 macOS 的全局默认设备，也不会安装 HAL 驱动。指定麦克风断开后暂停启动链路，等待它恢复，不会退回系统默认输入；指定远端输出丢失时同样等待，指定本地输出丢失则保留字幕。通过 Core Audio 属性监听（设备列表、默认输入输出、所选设备的存活 / 采样率 / 流配置，300 ms 去抖，5 秒兜底轮询）检测所选设备的 ID、存活、采样率和声道变化，变化后重建会话并保留已显示字幕；IO 缓冲大小不计入，其他应用调整共享设备的缓冲不会触发重建；重建包括翻译连接，会有短暂中断。默认设备选项仍跟随系统默认。
-
-麦克风采集不再依赖所选应用是否正在播放：应用暂停时仍可处理自己说话。当前没有接入声学回声消除；扬声器外放的声音仍可能被麦克风采到。系统 Voice Processing 的输入输出格式和播放参考需要单独验证，不能将本次路由防回灌视为声学回声消除。
-
-## 断句与延迟
-
-**所有翻译、转录和音色复刻请求统一使用 qwen3.8**，开关音色复刻不切换模型。会话使用 `output_modalities` 与 `audio.input.turn_detection` 的 `speaker_detection`（threshold 0.5）；ASR 自动开启并检测源语种。原文、译文按 delta 持续更新，响应段结束前就能收到文字和译声。
-
-开启复刻时发送 `enable_voice_clone` 与 `voice_clone_options.frequency`，同时将 `audio.output.voice` 和 `voice` 设为对应音色。我的声音使用 once，所选应用使用 always；收到 session.updated 后核对复刻标志、频率及嵌套输出音色。未确认配置或复刻失败会明确报错，不静默切换模型或普通音色。服务端回显及成功生成音频不代表音色相似度已经经过真人验收。
-
-旧版 400/1000/1500 ms VAD 控件已从界面移除，避免对 qwen3.8 自动检测展示无效设置。历史参数保留在本地偏好中，不发往当前协议。
-
-断句边界由服务端决定。App 保留语音段的 `item_id` 和音频起止时间，在 ASR 与 response 事件确认消息类型后，按译文消息的 `previous_item_id` 关联原文（不能仅凭 assistant 角色或前序消息判断），并按 `response_id` 管理译文、译声和响应状态。前后两句可以交错返回；关联关系晚到时合并到对应原文条目，不靠“当前句子”猜测。空文本的完成事件也会被处理；中断、取消和未完成回复有独立状态提示。译声按服务端响应创建顺序播放，后一回复等待前一回复生成结束且播放排空；取消只清理对应回复。
-
-配置在下一次会话建立时生效。日志按实际模型解析服务端回显，明确区分请求、回显以及缺失字段；回显不等于断句质量验收。完整本地音频回放与协议核对见 [qwen3.8 对接记录](docs/qwen38-protocol-validation-2026-09-22.md)。
-
-麦克风用 `AVAudioSinkNode` 在实时线程直接接收设备 IO buffer（通常 512 帧，约 11 ms），不再经过 `installTap` 至少 100 ms 的攒包，句尾静音能更早到达服务端。偶尔出现的超大 buffer 仍按服务端建议切成 40 毫秒一包。
-
-## 结构
-
-```
-LiveTranslateBridge/
-  LiveTranslateBridgeApp   程序入口，持有全局 SubtitleModel
-  ContentView              字幕 / 诊断两个标签页
-  CallAudioKit/            采集层，与 UI 无关
-    AudioObjectProperty    AudioObject 属性读取的类型化封装
-    AudioSourceApplication 枚举可选的 Core Audio 应用声音源
-    CallMonitor            监听所选应用（含 helper 进程）的 IO 状态
-    DownlinkTap            按 bundle ID 的进程 tap + 聚合设备，会话内只建一次；含静音接管与残留清理
-    UplinkCapture          AVAudioEngine + AVAudioSinkNode 采集本机麦克风
-    CapturedAudio          实时回调借出的 AudioBufferList 视图
-    AudioRing              渲染线程无锁环形缓冲
-    CallAudioSession       把监听与两路采集串起来；两路各可单独关闭，只留麦克风时不等通话
-    Resampler              48k 立体声 → 16k 单声道 Int16
-    AudioOutputDevice      枚举输出设备，识别可回灌通话的回环设备
-    TranslationPlayer      原声 / 24k 模型译声两个 source node 混音、逐采样增益与压低、输出设备绑定
-  Translation/             与翻译服务对接
-    TranslationClient      qwen3.8-livetranslate-flash-realtime 的 WebSocket 客户端
-    CredentialStore        凭据读写（钥匙串，环境变量优先）
-  Models/                  可观察状态，供视图绑定
-    SubtitleModel          两向各一条链路，把采集与翻译的回调汇成字幕条目；持有采集范围与翻译 / 转录模式
-    DiagnosticsModel       进程检查、电平表、离线文件翻译
-  Views/                   纯视图
-    SubtitleView           字幕板
-    SettingsView           凭据、服务区域与音频路由
-    AudioRoutingSettings   应用声音源、输入 / 输出端与双向音量
-    DiagnosticsView        诊断面板（原 CLI 的 status / levels / clean / translate-file）
+```bash
+open LiveTranslateBridge.xcodeproj    # 在 Xcode 里运行
+./scripts/build-app.sh                # 或者用命令行构建出未签名的 dist/LiveTranslateBridge.app
 ```
 
-采集层全部标了 `nonisolated`：它们跑在 Core Audio 的实时线程上，而工程默认 `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`，不脱离隔离就会被编译器拦下。采集回调通过预分配的单生产者/单消费者环形队列交给翻译和原声播放 worker，回调不进行网络发送、重采样或播放器生命周期操作。翻译队列丢弃超过 500 ms 的过期采集块，原声队列为 250 ms；会话切换会使旧队列数据与旧 socket 回调失效。播放器的启动、停止和写入在专用串行队列上执行；渲染线程只读环形缓冲和原子增益目标，播放状态由该队列每 20 ms 检查一次。
+调试时可以用环境变量 `DASHSCOPE_API_KEY` / `DASHSCOPE_WORKSPACE_ID` 覆盖钥匙串里的凭据。
 
-## 诊断面板
+## 发布
 
-对应原 CLI 的四个命令，用来在不真打电话的前提下检查链路：
+推送 `v*` 标签后，CI 会完成构建、Developer ID 签名、公证，然后发布 GitHub Release 并更新 Homebrew tap。标签版本必须与工程里的 `MARKETING_VERSION` 一致。
 
-| 面板 | 原命令 | 作用 |
-|---|---|---|
-| 声音源进程 | `status` | 所选应用是否注册、是否正在输出 |
-| 电平表 | `levels` | 所选应用与所选系统输入的双向电平，会请求麦克风权限 |
-| 离线翻译 | `translate-file` | 用 `samples/*.wav` 回归翻译链路 |
-| 维护 | `clean` | 清理异常退出遗留的聚合设备 |
+## 限制
 
-## 关于沙盒
+- **没有沙盒**：进程 tap 和聚合设备在沙盒里会被拒绝，所以无法上架 Mac App Store。
+- **不录音**：App 不提供保存到磁盘的功能，通话录音一般需要各方同意。
+- **没有回声消除**：用扬声器外放时，麦克风会采到对方的声音和译声；戴耳机或输出到回环设备就不会有这个问题。
+- **译声延迟**：译声比原话晚 1–3 秒。不希望二者重叠时，把对应一侧的原声音量调到 0。
 
-工程已关闭 App Sandbox。`AudioHardwareCreateProcessTap` 与聚合设备在沙盒下会被拒绝，这是采集链路的硬前提。代价是不能上架 Mac App Store。
+## 文档
 
-系统音频与麦克风用途说明写在显式 `Info.plist` 的 `NSAudioCaptureUsageDescription`、`NSMicrophoneUsageDescription` 中，Hardened Runtime 所需的 `com.apple.security.device.audio-input` 写在 App entitlement 中。字幕首次创建 process tap 时，macOS 会请求系统音频录制权限；采集范围包含自己或诊断电平表启用时会打开麦克风。
-
-## 关于录音
-
-App 刻意不提供录制到磁盘的功能。通话内容属于双方，多数司法辖区要求全员同意才能录音；中国《个人信息保护法》将声纹列为敏感个人信息，需单独同意。
-
-需要录制请直接用 `CallAudioKit`，并自行确保已获得对方同意。
-
-## 已知问题
-
-**声学回授**：扬声器外放时麦克风会收到远端声音，实测包络相关 r≈0.19–0.27。做纯字幕不受影响。在「设置 → 语音」把译文播到扬声器时，译文会被麦克风重新采集、再送去翻译一次；播到回环设备则不经过声学路径，没有这个问题。
-
-**时钟漂移**：两路时钟独立，实测 12 秒偏差约 0.25%。短句 ASR 无影响。原声回放靠抖动缓冲的追赶 / 重新缓冲吸收漂移，不做连续变速补偿；麦克风与输出设备时钟相差较大时，长时间监听会偶尔出现一次 40 ms 级的跳跃或空隙。
-
-**译文回灌依赖外部回环设备**：App 只能把合成语音播到某个输出设备，无法直接写入接力通话的上行——那一路由 `avconferenced` 从系统默认输入读取。因此要让对方听到译文，必须由用户自行安装回环声卡并设为默认输入（见「让对方听到译文」一节）。自带回灌需要一个 HAL 插件，属于独立的驱动工程。
-
-**译文延迟**：合成语音比说话本身晚 1–3 秒。现在可以同时混合原声和译声，但二者天然不同步；需要避免重叠时，把对应方向的原声音量调为 0。
-
-## 音频优化验证（2026-09-22）
-
-离线测试使用与实际播放相同的混音/限幅图，不打开硬件设备。覆盖单声道到双声道、采样率切换、零音量、高增益混音限幅、并发停止、重复启动、译声积压与跳过、旧会话音频隔离、队列过期及回环识别。详细实现边界和实机验收见 [音频优化记录](docs/audio-optimization-2026-09-22.md)。
-
-2026-09-23 重构了采集与播放链路（多进程应用 tap、立体声下混、麦克风低延迟采集、拉取式混音、设备监听），见 [采集链路重构记录](docs/audio-capture-2026-09-23.md)。
-
-服务端分段关联的协议与验证见 [分段关联修复记录](docs/server-segmentation-2026-09-22.md)。
+- [接力通话音频实测](docs/findings.md)
+- [采集链路重构](docs/audio-capture-2026-09-23.md) · [音频优化](docs/audio-optimization-2026-09-22.md)
+- [qwen3.8 协议对接](docs/qwen38-protocol-validation-2026-09-22.md) · [服务端分段关联](docs/server-segmentation-2026-09-22.md)
