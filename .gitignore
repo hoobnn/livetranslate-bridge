@@ -14,3 +14,7 @@ xcuserdata/
 
 # 通话样本：含本机说话声，不进版本库
 *.wav
+
+# 发布产物
+dist/
+dist-release/

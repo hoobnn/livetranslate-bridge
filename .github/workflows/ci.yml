@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # 工程为 Xcode 27 格式且依赖 macOS 27 API，只能跑在 xcode-27 镜像上。
+  test:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🧪 Unit tests
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project LiveTranslateBridge.xcodeproj \
+            -scheme LiveTranslateBridge \
+            -destination 'platform=macOS' \
+            -only-testing:LiveTranslateBridgeTests \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
+
+  # 签名 + 公证构建；需要 secrets，fork 的 PR 跳过。打 v* 标签时发布 Release。
+  release:
+    needs: test
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: hoobnn/ci-workflows/.github/workflows/macos-release.yml@v1
+    with:
+      app-path: dist/LiveTranslateBridge.app
+      build-command: ./scripts/build-app.sh
+      artifact-basename: LiveTranslateBridge
+      entitlements: LiveTranslateBridge/LiveTranslateBridge.entitlements
+      make-dmg: true
+      dmg-volume-name: Live Translate Bridge
+      runs-on: xcode-27
+    secrets: inherit
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Fetch released dmg checksum
+        id: checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
+            --pattern "LiveTranslateBridge-${VERSION}-macOS.dmg.sha256" \
+            --dir "$RUNNER_TEMP"
+          SHA=$(awk '{print $1}' "$RUNNER_TEMP/LiveTranslateBridge-${VERSION}-macOS.dmg.sha256")
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: 🍺 Sync cask
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+          DMG_SHA: ${{ steps.checksum.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set; skipping tap sync."
+            exit 0
+          fi
+
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap"
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/hoobnn/homebrew-tap.git" \
+            "$TAP_DIR"
+
+          CASK="$TAP_DIR/Casks/livetranslate-bridge.rb"
+          sed -i -E \
+            -e "s/^(  version \")[^\"]+(\")/\1${VERSION}\2/" \
+            -e "s/^(  sha256 \")[^\"]+(\")/\1${DMG_SHA}\2/" \
+            "$CASK"
+
+          cd "$TAP_DIR"
+          if git diff --quiet; then
+            echo "Cask already at ${VERSION}; nothing to do."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/livetranslate-bridge.rb
+          git commit -m "⬆️ arrow-up(livetranslate-bridge): bump cask to ${VERSION}"
+          git push origin HEAD
