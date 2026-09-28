@@ -261,8 +261,19 @@ final class DiagnosticsModel {
         let (downlink, uplink) = meter.drain()
         // Decay rather than snapping to zero, so a silent frame does not make
         // the meter flicker.
-        downlinkPeak = max(downlink, downlinkPeak * 0.6)
-        uplinkPeak = max(uplink, uplinkPeak * 0.6)
+        let nextDownlink = Self.decayed(downlinkPeak, toward: downlink)
+        let nextUplink = Self.decayed(uplinkPeak, toward: uplink)
+        // Written only on change: every write invalidates the meter, and a
+        // silent line would otherwise redraw it ten times a second forever as
+        // the decay approached zero without reaching it.
+        if nextDownlink != downlinkPeak { downlinkPeak = nextDownlink }
+        if nextUplink != uplinkPeak { uplinkPeak = nextUplink }
+    }
+
+    /// Below −60 dBFS the bar is already empty, so the decay stops there.
+    private static func decayed(_ current: Float, toward peak: Float) -> Float {
+        let next = max(peak, current * 0.6)
+        return next < 0.001 ? 0 : next
     }
 
     // MARK: - clean

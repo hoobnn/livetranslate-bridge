@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Observation
 import Testing
 @testable import LiveTranslateBridge
 
@@ -114,6 +115,29 @@ struct SubtitleEntryTests {
         let rows = model.visibleEntries
         #expect(rows[0].startsNewSpeaker == false)
         #expect(rows[1].startsNewSpeaker == true)
+    }
+
+    /// The board's row list must not depend on the text inside the rows: a
+    /// streamed word belongs to the one card it lands in. If the board read
+    /// every turn's text, each delta would rebuild and diff the whole board.
+    /// Only a turn's first visible character is the board's business.
+    @Test func streamedTextReachesTheBoardOnlyWhenATurnAppears() {
+        let model = SubtitleModel()
+        model.ingestForTesting(.translationComplete("earlier"), from: .remote)
+        model.ingestForTesting(.translationDelta(" "), from: .local)
+
+        func boardInvalidated(by change: () -> Void) -> Bool {
+            var invalidated = false
+            withObservationTracking {
+                _ = model.visibleEntries
+                _ = model.entryCount
+            } onChange: { invalidated = true }
+            change()
+            return invalidated
+        }
+
+        #expect(boardInvalidated { model.ingestForTesting(.translationDelta("Hi"), from: .local) })
+        #expect(!boardInvalidated { model.ingestForTesting(.translationDelta(" there"), from: .local) })
     }
 
     @Test func whitespaceUtterancesDoNotLeaveRailsCountsOrCopiedHeaders() {

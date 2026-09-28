@@ -70,12 +70,7 @@ struct DiagnosticsView: View {
     private var levelSection: some View {
         Card(t("diagnostics.levels.title"),
              subtitle: t("diagnostics.levels.note")) {
-            VStack(spacing: 8) {
-                LevelBar(label: "DL", peak: diagnostics.downlinkPeak)
-                LevelBar(label: "UL", peak: diagnostics.uplinkPeak)
-            }
-            .padding(12)
-            .well()
+            LevelMeters(diagnostics: diagnostics)
 
             Button(role: diagnostics.isMetering ? .destructive : nil) {
                 if diagnostics.isMetering {
@@ -214,6 +209,22 @@ private struct ProcessReport: View {
 }
 
 // MARK: - level bar
+
+/// The two meters, as their own view: the peaks change ten times a second
+/// while metering, and read in the panel's body they re-ran every card on it
+/// at that rate.
+private struct LevelMeters: View {
+    let diagnostics: DiagnosticsModel
+
+    var body: some View {
+        VStack(spacing: 8) {
+            LevelBar(label: "DL", peak: diagnostics.downlinkPeak)
+            LevelBar(label: "UL", peak: diagnostics.uplinkPeak)
+        }
+        .padding(12)
+        .well()
+    }
+}
 
 private struct LevelBar: View {
     let label: String

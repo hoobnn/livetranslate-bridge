@@ -279,40 +279,14 @@ struct SubtitleView: View {
     private func transcriptScroll(gutter: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // `ForEach` over the entries directly. The run-grouping a card
-                // needs — whether the one above it came from the same side —
-                // is carried on the entry itself rather than re-derived here
-                // from an index: text streams in several times a second, and
-                // enumerating the whole board on each of those redraws was
-                // work proportional to a long call's length per delta.
-                // Turns within a run sit close; a new speaker gets air. The
-                // rhythm is what groups the board, now that no card border
-                // does it.
                 LazyVStack(alignment: .leading, spacing: Theme.spacing8) {
-                    ForEach(model.visibleEntries) { row in
-                        EntryCard(
-                            entry: row.entry,
-                            showsTranslation: model.runningMode == .translate,
-                            size: model.transcriptSize,
-                            showsTime: model.showsTimestamps,
-                            showsSource: model.showsSourceText,
-                            continuesRun: row.continuesRun,
-                            measure: measure
-                        )
-                            .id(row.id)
-                            // A turn that starts a new speaker's run gets the
-                            // air; one continuing a run stays tight against
-                            // the card above, so the board groups visually the
-                            // way the conversation did.
-                            .padding(.top, row.startsNewSpeaker ? Theme.spacing16 : 0)
-                            // Cards fade in where they sit. They used to fly
-                            // in from their own lane's edge, a full sideways
-                            // sweep across the board for every turn — which
-                            // is a lot of motion on a surface that gains a
-                            // line every few seconds, and reads as the board
-                            // twitching rather than as a turn arriving.
-                            .transition(.opacity)
-                    }
+                    // The rows are their own view so that what they read is
+                    // all that redraws them. Inline, the list sat in this
+                    // view's body, which also reads the session status, the
+                    // speaking flag, the copy feedback and the follow state —
+                    // and each of those changing rebuilt the row list and
+                    // diffed every turn on the board.
+                    BoardRows(model: model, measure: measure)
                     Color.clear.frame(height: 1).id(tailID)
                 }
                 // The gutter opens up with the window. A fixed 20 pt is a
@@ -387,9 +361,14 @@ struct SubtitleView: View {
             // one spent more time scrolling than drawing. The model raises
             // this at most once per frame's worth of deltas, which is as
             // often as the scroll position can actually change on screen.
-            .onChange(of: model.scrollTick) { _, _ in
-                guard model.entries.last != nil, isFollowingLatest else { return }
-                proxy.scrollTo(tailID, anchor: .bottom)
+            //
+            // Read in a zero-size child, not here: a tick lands on every batch
+            // of streamed text, and read in this body it re-ran the whole
+            // board view that often just to issue one scroll.
+            .background {
+                LiveTextFollower(model: model, isFollowing: isFollowingLatest) {
+                    proxy.scrollTo(tailID, anchor: .bottom)
+                }
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentSize.height <= geometry.containerSize.height
@@ -411,6 +390,62 @@ struct SubtitleView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - rows
+
+/// The board's turns.
+///
+/// Reads only what decides which rows exist and how they are set — the
+/// visible turns, the text size and the display switches. A streaming word
+/// reaches none of these: it is read by the one `EntryCard` it lands in.
+private struct BoardRows: View {
+    let model: SubtitleModel
+    let measure: CGFloat
+
+    var body: some View {
+        // Turns within a run sit close; a new speaker gets air. The rhythm is
+        // what groups the board, now that no card border does it.
+        ForEach(model.visibleEntries) { row in
+            EntryCard(
+                entry: row.entry,
+                showsTranslation: model.runningMode == .translate,
+                size: model.transcriptSize,
+                showsTime: model.showsTimestamps,
+                showsSource: model.showsSourceText,
+                continuesRun: row.continuesRun,
+                measure: measure
+            )
+                .id(row.id)
+                // A turn that starts a new speaker's run gets the air; one
+                // continuing a run stays tight against the card above, so the
+                // board groups visually the way the conversation did.
+                .padding(.top, row.startsNewSpeaker ? Theme.spacing16 : 0)
+                // Cards fade in where they sit rather than sweeping in from
+                // their lane's edge: on a surface that gains a line every few
+                // seconds, motion reads as the board twitching.
+                .transition(.opacity)
+        }
+    }
+}
+
+/// Keeps the newest words in view while the live card grows.
+///
+/// Nothing to draw; it exists so the coalesced scroll tick is observed here,
+/// and only this empty view re-evaluates when it moves.
+private struct LiveTextFollower: View {
+    let model: SubtitleModel
+    let isFollowing: Bool
+    let scrollToTail: () -> Void
+
+    var body: some View {
+        Color.clear
+            .onChange(of: model.scrollTick) { _, _ in
+                guard isFollowing, !model.entries.isEmpty else { return }
+                scrollToTail()
+            }
+            .accessibilityHidden(true)
     }
 }
 

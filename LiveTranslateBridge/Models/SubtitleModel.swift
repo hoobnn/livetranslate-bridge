@@ -173,8 +173,28 @@ final class SubtitleModel {
     final class Entry: Identifiable, Equatable {
         let id = UUID()
         var direction: Direction = .remote
-        var transcript: String = ""
-        var translation: String = ""
+        var transcript: String = "" {
+            didSet { refreshTextFlags() }
+        }
+        var translation: String = "" {
+            didSet { refreshTextFlags() }
+        }
+
+        /// Whether each line holds anything a reader would see, and whether
+        /// the turn as a whole does.
+        ///
+        /// Stored, and written only when they actually flip, rather than
+        /// derived from the text on read. The board decides which rows to draw
+        /// from these, and deriving them there made the board's view read
+        /// every turn's text — so each streamed word on the live card
+        /// invalidated the whole board, not just that card, and re-trimmed
+        /// every string on it to find out nothing had changed. Written this
+        /// way, a delta costs one trim of the line it touched, and the board
+        /// hears about it only when a turn gains or loses its first character.
+        private(set) var hasTranscript = false
+        private(set) var hasTranslation = false
+        private(set) var isVisible = false
+
         var isComplete = false
         var sourceComplete = false
         var translationComplete = false
@@ -218,6 +238,17 @@ final class SubtitleModel {
             self.startedAt = startedAt
             self.continuesRun = continuesRun
             self.startsNewSpeaker = startsNewSpeaker
+            refreshTextFlags()
+        }
+
+        private func refreshTextFlags() {
+            let transcriptVisible = Self.hasVisibleText(transcript)
+            let translationVisible = Self.hasVisibleText(translation)
+            // Guarded writes: observation fires on every set, equal or not.
+            if hasTranscript != transcriptVisible { hasTranscript = transcriptVisible }
+            if hasTranslation != translationVisible { hasTranslation = translationVisible }
+            let visible = transcriptVisible || translationVisible
+            if isVisible != visible { isVisible = visible }
         }
 
         static func == (lhs: Entry, rhs: Entry) -> Bool {
@@ -234,15 +265,13 @@ final class SubtitleModel {
         private static let invisibleCharacters = CharacterSet.whitespacesAndNewlines
             .union(CharacterSet(charactersIn: "\u{200B}\u{FEFF}"))
 
-        var hasTranscript: Bool {
-            !transcript.trimmingCharacters(in: Self.invisibleCharacters).isEmpty
+        /// Scans for the first visible character instead of trimming: no
+        /// copy, and it stops at the first letter of a line that has one.
+        private static func hasVisibleText(_ text: String) -> Bool {
+            text.unicodeScalars.contains { !invisibleCharacters.contains($0) }
         }
 
-        var hasTranslation: Bool {
-            !translation.trimmingCharacters(in: Self.invisibleCharacters).isEmpty
-        }
-
-        var isEmpty: Bool { !hasTranscript && !hasTranslation }
+        var isEmpty: Bool { !isVisible }
 
         /// `HH:mm:ss` in the current locale, for the card header and the
         /// copied transcript. Formatted on read rather than stored, so a
@@ -299,7 +328,9 @@ final class SubtitleModel {
     private static let residentEntryLimit = 500
     private static let renderedEntryLimit = 250
 
-    var entryCount: Int { archivedEntries.count + entries.filter { !$0.isEmpty }.count }
+    /// Read several times per redraw of the board's header, so it counts in
+    /// place rather than building a filtered copy of the board to measure.
+    var entryCount: Int { archivedEntries.count + entries.count { $0.isVisible } }
     /// The turns the board draws: the most recent window of them, minus any
     /// that has no text yet, each paired with how it groups against the turn
     /// drawn above it.
@@ -1434,14 +1465,14 @@ final class SubtitleModel {
     /// Recomputes one entry's run flags against whatever now precedes it.
     private func repairRunFlags(at index: Int) {
         guard entries.indices.contains(index) else { return }
-        guard index > 0 else {
-            entries[index].continuesRun = false
-            entries[index].startsNewSpeaker = false
-            return
-        }
-        let previous = entries[index - 1].direction
-        entries[index].continuesRun = previous == entries[index].direction
-        entries[index].startsNewSpeaker = previous != entries[index].direction
+        let entry = entries[index]
+        let previous = index > 0 ? entries[index - 1].direction : nil
+        let continues = previous == entry.direction
+        let startsNew = previous != nil && previous != entry.direction
+        // Guarded: a linked item repairs the whole board, and an unguarded
+        // write is an observation event per turn even when nothing moved.
+        if entry.continuesRun != continues { entry.continuesRun = continues }
+        if entry.startsNewSpeaker != startsNew { entry.startsNewSpeaker = startsNew }
     }
 }
 
