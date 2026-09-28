@@ -6,7 +6,16 @@ on:
       - main
     tags:
       - "v*"
+    # 只改文档不跑 CI。标签推送不受影响：GitHub 对 tag 推送不应用路径过滤。
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
   workflow_dispatch:
 
 permissions:
@@ -29,10 +38,11 @@ jobs:
             -only-testing:LiveTranslateBridgeTests \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
 
-  # 签名 + 公证构建；需要 secrets，fork 的 PR 跳过。打 v* 标签时发布 Release。
+  # 签名 + 公证构建并发布 Release，只在推送 v* 标签时运行；
+  # 平时推送 main 和 PR 只跑单元测试。
   release:
     needs: test
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: startsWith(github.ref, 'refs/tags/v')
     uses: hoobnn/ci-workflows/.github/workflows/macos-release.yml@v1
     with:
       app-path: dist/LiveTranslateBridge.app
