@@ -57,7 +57,9 @@ struct ContentView: View {
         .toolbar {
             // The destination picker sits where macOS puts a view switcher:
             // in the toolbar, under the window's title, rather than taking a
-            // column of its own for two items.
+            // column of its own for two items. The tabs style (macOS 27) is
+            // the segmented control drawn as navigation rather than as a
+            // value, and is announced to VoiceOver as tabs.
             ToolbarItem(placement: .navigation) {
                 Picker(t("tab.subtitles"), selection: $pane) {
                     ForEach(Pane.allCases) { item in
@@ -66,18 +68,18 @@ struct ContentView: View {
                             .accessibilityIdentifier("pane." + item.rawValue)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.tabs)
                 .labelsHidden()
                 .help(t("tab.switch.help"))
             }
-            ToolbarSpacer(.flexible, placement: .primaryAction)
-            ToolbarItem(placement: .primaryAction) {
-                SettingsLink {
-                    Label(t("ux.settings"), systemImage: "gearshape")
-                }
-                .help(t("ux.settings"))
-            }
+            // Where the window is going matters more than any one action on
+            // the board: when the toolbar narrows, actions fold into the
+            // overflow menu before the switcher does.
+            .visibilityPriority(.high)
+            // No Settings button: the HIG keeps Settings in the app menu and
+            // on ⌘, rather than in a window's toolbar.
         }
+        .focusedSceneValue(\.mainPane, $pane)
         .navigationTitle(pane.title)
         .toolbar(removing: .title)
         .frame(minWidth: 760, minHeight: 520)

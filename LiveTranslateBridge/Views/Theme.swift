@@ -9,18 +9,10 @@ enum Theme {
     /// Outer container radius. macOS 26 windows are rounded far more than the
     /// 8–10 pt that used to read as "card".
     static let cardRadius: CGFloat = 16
-
-    /// Subtitle cards are smaller than the diagnostics cards this radius was
-    /// set for, and a 16 pt corner on a two-line bubble reads as a lozenge.
-    /// macOS keeps the corner proportional to the box.
-    static let bubbleRadius: CGFloat = 13
+    /// A surface nested one step inside a card: the card's radius less the
+    /// card's padding would be concentric, but that is 0 at 16 pt padding, and
+    /// a well with square corners reads as a table cell. 10 pt keeps it soft.
     static let innerRadius: CGFloat = 10
-    static let controlRadius: CGFloat = 8
-
-    /// A radius that stays concentric with `outer` when inset by `inset`.
-    static func concentric(inner outer: CGFloat, inset: CGFloat) -> CGFloat {
-        max(4, outer - inset)
-    }
 
     // MARK: - measure
 
@@ -71,7 +63,6 @@ enum Theme {
     static let spacing12: CGFloat = 12
     static let spacing16: CGFloat = 16
     static let spacing20: CGFloat = 20
-    static let spacing28: CGFloat = 28
 
     static let cardPadding: CGFloat = 16
     static let sectionSpacing: CGFloat = 20
@@ -237,46 +228,12 @@ struct Card<Content: View>: View {
 
 // MARK: - surfaces
 
-/// The raised surface, as a modifier rather than an inline branch, so that
-/// "Reduce transparency" can be read from the environment — a plain
-/// `@ViewBuilder` on `View` has no environment of its own to read it from.
-///
-/// Turning that setting on is a request to stop sampling what is behind a
-/// surface, which is the whole of what `glassEffect` does. Honouring it here
-/// covers every raised surface in the app at once, because they all come
-/// through this modifier.
-private struct GlassCard: ViewModifier {
-    let radius: CGFloat
-
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var contrast
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        if #available(macOS 26.0, *), !reduceTransparency, contrast != .increased {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            // Opaque, and with a border that is actually a border at
-            // increased contrast rather than a hairline hint of one.
-            content
-                .background(.background.secondary, in: shape)
-                .overlay {
-                    shape.strokeBorder(
-                        .separator.opacity(contrast == .increased ? 1 : 0.5),
-                        lineWidth: 1
-                    )
-                }
-        }
-    }
-}
-
-/// The repeated content surface. A modifier for the same reason `GlassCard`
-/// is one: the fill and the border it draws are exactly what the two
-/// accessibility settings adjust, and both live in the environment.
+/// The repeated content surface. A modifier rather than an inline branch
+/// because the border it draws is exactly what "Increase contrast" adjusts,
+/// and that setting lives in the environment.
 private struct ContentCard: ViewModifier {
     let radius: CGFloat
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
@@ -316,17 +273,11 @@ private struct Well: ViewModifier {
 }
 
 extension View {
-    /// The standard raised surface. `glassEffect` carries the macOS 26 look;
-    /// the fallback keeps the app buildable and legible on older systems, and
-    /// serves "Reduce transparency" on new ones.
-    func glassCard(radius: CGFloat = Theme.cardRadius) -> some View {
-        modifier(GlassCard(radius: radius))
-    }
-
-    /// A content surface rather than another glass layer. Liquid Glass is
-    /// reserved for navigation and floating controls; repeated transcript and
+    /// A content surface rather than a glass layer. Liquid Glass is reserved
+    /// for the control layer — the toolbar, the session bar, floating buttons —
+    /// where the system's own glass buttons carry it; repeated transcript and
     /// diagnostics cards stay quiet, opaque enough to read, and clearly below
-    /// that control layer.
+    /// that layer.
     func contentCard(
         radius: CGFloat = Theme.cardRadius
     ) -> some View {

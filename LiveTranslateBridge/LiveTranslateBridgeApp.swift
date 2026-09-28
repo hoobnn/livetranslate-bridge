@@ -40,6 +40,7 @@ struct LiveTranslateBridgeApp: App {
         }
         .defaultSize(width: 1040, height: 680)
         .windowToolbarStyle(.unified)
+        .commands { AppCommands(model: model) }
 
         Settings {
             SettingsView(model: model, localization: localization)

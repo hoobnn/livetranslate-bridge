@@ -19,6 +19,10 @@ struct LogPane: View {
     private static let contentHeight: CGFloat = 176
 
     var body: some View {
+        // Collapsed, the pane is one glass button floating over the board's
+        // bottom edge — control layer. Expanded, it is something to read, so
+        // it becomes an opaque content card: glass behind scrolling
+        // monospaced text is exactly what the HIG keeps glass away from.
         VStack(spacing: 0) {
             header
             if isExpanded {
@@ -27,8 +31,9 @@ struct LogPane: View {
                     .frame(height: Self.contentHeight)
             }
         }
-        .background(.background.opacity(isExpanded ? 0.9 : 0), in:
-            RoundedRectangle(cornerRadius: 12))
+        .frame(maxWidth: isExpanded ? .infinity : nil, alignment: .leading)
+        .modifier(ExpandedSurface(isExpanded: isExpanded))
+        .frame(maxWidth: .infinity, alignment: .leading)
         .animation(Theme.settle, value: isExpanded)
         // Closing the pane ends the reading session that scrolled away from
         // the tail; reopening it should land on the newest line rather than
@@ -40,23 +45,32 @@ struct LogPane: View {
 
     // MARK: - header
 
+    private var toggle: some View {
+        Button {
+            withAnimation(Theme.settle) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                Label(t("log.title"), systemImage: "list.bullet.rectangle")
+                    .font(.App.label)
+                    .labelStyle(.titleAndIcon)
+            }
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
-            Button {
-                withAnimation(Theme.settle) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Label(t("log.title"), systemImage: "list.bullet.rectangle")
-                        .font(.App.label)
-                        .labelStyle(.titleAndIcon)
+            Group {
+                if isExpanded {
+                    toggle.buttonStyle(.plain)
+                } else {
+                    toggle.buttonStyle(.glass)
                 }
             }
-            .buttonStyle(.plain)
             .help(t("log.toggle.help"))
             // The chevron says open or closed visually; `isExpanded` is what
             // says it to VoiceOver, which otherwise announces the same
@@ -64,23 +78,21 @@ struct LogPane: View {
             .accessibilityLabel(t("log.title"))
             .accessibilityAddTraits(isExpanded ? [.isButton, .isSelected] : .isButton)
 
-            Spacer(minLength: 8)
-
             if isExpanded {
+                Spacer(minLength: 8)
+
                 categoryChips
                 levelPicker
-            }
 
-            if isExpanded {
-            Text(t("log.lineCount", model.lines.count))
-                .font(.App.numeric)
-                .foregroundStyle(.tertiary)
+                Text(t("log.lineCount", model.lines.count))
+                    .font(.App.numeric)
+                    .foregroundStyle(.tertiary)
 
-            controls
+                controls
             }
         }
-        .padding(.horizontal, Theme.spacing16)
-        .padding(.vertical, Theme.spacing8)
+        .padding(.horizontal, isExpanded ? Theme.spacing16 : 0)
+        .padding(.vertical, isExpanded ? Theme.spacing8 : 0)
         .contentShape(.rect)
     }
 
@@ -179,7 +191,6 @@ struct LogPane: View {
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(.background.opacity(0.72))
             .overlay {
                 if model.lines.isEmpty {
                     Text(t("log.empty"))
@@ -208,6 +219,20 @@ struct LogPane: View {
                 isFollowingTail = true
                 proxy.scrollTo(id, anchor: .bottom)
             }
+        }
+    }
+}
+
+/// The expanded pane's card. A modifier so the collapsed state can draw
+/// nothing at all — the glass button is its own surface.
+private struct ExpandedSurface: ViewModifier {
+    let isExpanded: Bool
+
+    func body(content: Content) -> some View {
+        if isExpanded {
+            content.contentCard(radius: 14)
+        } else {
+            content
         }
     }
 }

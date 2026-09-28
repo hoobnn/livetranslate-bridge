@@ -34,14 +34,27 @@ final class LiveTranslateBridgeUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["transcript.copy"].waitForExistence(timeout: 10))
         recordAppearance(app, name: "Subtitles-dark")
-        app.radioButtons["Diagnostics"].click()
+        pane(app, "diagnostics", title: "Diagnostics").click()
         XCTAssertFalse(app.buttons["transcript.copy"].exists)
         recordAppearance(app, name: "Diagnostics-dark")
-        app.radioButtons["Subtitles"].click()
+        pane(app, "subtitles", title: "Subtitles").click()
         XCTAssertTrue(app.buttons["transcript.copy"].isEnabled)
         app.buttons["session.setup"].click()
         XCTAssertTrue(app.staticTexts["Session"].waitForExistence(timeout: 3))
     }
+
+    /// The pane switcher uses the tabs picker style, which VoiceOver — and so
+    /// XCUITest — sees as tabs rather than radio buttons. Match on the
+    /// identifier, or on the title among the roles a segment can take.
+    @MainActor
+    private func pane(_ app: XCUIApplication, _ id: String, title: String) -> XCUIElement {
+        let roles: [XCUIElement.ElementType] = [.tab, .radioButton, .button]
+        return app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@ OR (label == %@ AND elementType IN %@)",
+                                  "pane." + id, title, roles.map(\.rawValue)))
+            .firstMatch
+    }
+
     @MainActor
     private func recordAppearance(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())

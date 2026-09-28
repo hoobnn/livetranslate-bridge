@@ -21,9 +21,17 @@ struct SubtitleView: View {
     @State private var isFollowingLatest = true
     @State private var isUserScrolling = false
     @State private var isShowingSetup = false
+    @State private var isShowingAudio = false
+    /// Bumped by the menu bar's Jump to Latest; the scroll view, which alone
+    /// holds the proxy that can scroll, acts on the change.
+    @State private var jumpRequest = 0
     private let tailID = "subtitle-tail"
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Secondary chrome recedes when the window is not key, the way the
+    /// system's own title and toolbar do, so a board left open beside a call
+    /// app does not compete with the window actually in use.
+    @Environment(\.appearsActive) private var appearsActive
 
     /// Collapsed by default, and remembered: the log is a debugging surface,
     /// but someone who opened it once is usually still debugging next launch.
@@ -31,7 +39,12 @@ struct SubtitleView: View {
 
     var body: some View {
         transcriptList
-            .safeAreaInset(edge: .top, spacing: 0) {
+            // A bar, not an inset: the board scrolls on underneath it and the
+            // system's scroll edge effect keeps the controls legible over the
+            // words passing below — the macOS 26 control layer floating over
+            // content, instead of an opaque strip and a divider cutting the
+            // window in two.
+            .safeAreaBar(edge: .top, spacing: 0) {
                 VStack(spacing: 8) {
                     header
                     HStack(spacing: 6) {
@@ -70,7 +83,7 @@ struct SubtitleView: View {
                         }
                     }
                     .font(.App.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appearsActive ? .secondary : .tertiary)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 4)
                     if let notice = model.audioNotice, model.isRunning {
@@ -94,15 +107,14 @@ struct SubtitleView: View {
                     }
                 }
                 .padding(.bottom, 12)
-                .background(Color(nsColor: .textBackgroundColor))
-                .overlay(alignment: .bottom) { Divider() }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+            .safeAreaBar(edge: .bottom, spacing: 0) {
                 LogPane(model: log, isExpanded: $isLogExpanded)
                     .padding(.horizontal, Theme.spacing16)
                     .padding(.bottom, Theme.spacing12)
             }
             .toolbar { if isActive { toolbarItems } }
+            .focusedSceneValue(\.subtitleActions, isActive ? actions : nil)
             .confirmationDialog(t("ux.clear.title"), isPresented: $confirmsClear,
                                 titleVisibility: .visible) {
                 Button(t("subtitles.clear"), role: .destructive) {
@@ -138,31 +150,73 @@ struct SubtitleView: View {
             .onDisappear { copyFeedbackTask?.cancel() }
     }
 
+    // MARK: - actions
+
+    /// What the menu bar can do to the board. The toolbar's buttons call the
+    /// same functions, so a menu command and its button never disagree.
+    private var actions: SubtitleActions {
+        SubtitleActions(
+            canEdit: model.entryCount > 0,
+            isFollowingLatest: isFollowingLatest,
+            copyAll: copyAll,
+            requestClear: { confirmsClear = true },
+            jumpToLatest: { jumpRequest += 1 },
+            showSetup: { isShowingSetup = true },
+            showAudioRouting: { isShowingAudio = true }
+        )
+    }
+
+    private func copyAll() {
+        guard model.entryCount > 0 else { return }
+        let board = NSPasteboard.general
+        board.clearContents()
+        guard board.setString(model.transcriptText, forType: .string) else { return }
+        didCopy = true
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            didCopy = false
+        }
+    }
+
     // MARK: - header
 
     /// One bar: what the session is, and the button that starts it.
     ///
-    /// It floats over the board in a `safeAreaInset` rather than sitting in
+    /// It floats over the board in a `safeAreaBar` rather than sitting in
     /// the window toolbar, because Start is the app's primary control during
     /// a call and the toolbar is where macOS puts things you reach for
     /// occasionally.
+    ///
+    /// The session's controls are glass — they are the control layer, and
+    /// the board scrolls under them — grouped in one container so adjacent
+    /// buttons blend and morph as Skip appears and disappears, instead of
+    /// each sampling the words behind it separately.
     private var header: some View {
         HStack(spacing: Theme.spacing12) {
             SessionSummaryButton(model: model, isPresented: $isShowingSetup)
 
             Spacer(minLength: Theme.spacing8)
 
-            AudioRoutingButton(model: model)
+            GlassEffectContainer(spacing: Theme.spacing8) {
+                HStack(spacing: Theme.spacing8) {
+                    AudioRoutingButton(model: model, isPresented: $isShowingAudio)
 
-            if model.isRunning, model.mode == .translate {
-                Button(t("audio.skipSpeech"), systemImage: "forward.end") {
-                    model.interruptTranslation()
+                    if model.isRunning, model.mode == .translate {
+                        Button(t("audio.skipSpeech"), systemImage: "forward.end") {
+                            model.interruptTranslation()
+                        }
+                        .buttonStyle(.glass)
+                        .help(t("audio.skipSpeech.help") + " (⌥⌘→)")
+                        .transition(.opacity)
+                    }
+                    TransportButton(isRunning: model.isRunning) {
+                        if model.isRunning { model.stop() } else { model.start() }
+                    }
                 }
-                .help(t("audio.skipSpeech.help"))
             }
-            TransportButton(isRunning: model.isRunning) {
-                if model.isRunning { model.stop() } else { model.start() }
-            }
+            .animation(Theme.settle, value: model.isRunning)
         }
         .padding(.horizontal, 24)
         .padding(.top, 16)
@@ -171,6 +225,9 @@ struct SubtitleView: View {
 
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
+        // Pushes the reading controls to the trailing edge, away from the
+        // pane switcher: navigation on one side, actions on the other.
+        ToolbarSpacer(.flexible, placement: .primaryAction)
         ToolbarItemGroup(placement: .primaryAction) {
             // Reading controls, grouped into one menu rather than spread
             // across the toolbar: they are set once and then left alone, so
@@ -178,24 +235,15 @@ struct SubtitleView: View {
             // actions that are used repeatedly.
             DisplayMenu(model: model)
 
-            Button {
-                let board = NSPasteboard.general
-                board.clearContents()
-                guard board.setString(model.transcriptText, forType: .string) else { return }
-                didCopy = true
-                copyFeedbackTask?.cancel()
-                copyFeedbackTask = Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    guard !Task.isCancelled else { return }
-                    didCopy = false
-                }
-            } label: {
+            Button(action: copyAll) {
                 Label(t(didCopy ? "ux.copied" : "subtitles.copyAll"),
                       systemImage: didCopy ? "checkmark" : "document.on.document")
             }
             .disabled(model.entryCount == 0)
-            .help(t(didCopy ? "ux.copied" : "subtitles.copyAll"))
-            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .help(t(didCopy ? "ux.copied" : "subtitles.copyAll") + " (⇧⌘C)")
+            // Symbol swap rather than a cut, so the confirmation reads as the
+            // same button answering rather than a different one appearing.
+            .contentTransition(.symbolEffect(.replace))
             .accessibilityIdentifier("transcript.copy")
 
             Button {
@@ -307,12 +355,7 @@ struct SubtitleView: View {
             // still growing several times a second that is a moving target.
             .overlay(alignment: .bottom) {
                 if !isFollowingLatest, model.entryCount > 0 {
-                    JumpToLatestButton {
-                        isFollowingLatest = true
-                        withAnimation(Theme.settle) {
-                            proxy.scrollTo(tailID, anchor: .bottom)
-                        }
-                    }
+                    JumpToLatestButton { jumpRequest += 1 }
                     .padding(.bottom, 12)
                     .transition(
                         reduceMotion
@@ -322,6 +365,12 @@ struct SubtitleView: View {
                 }
             }
             .animation(Theme.arrive, value: isFollowingLatest)
+            .onChange(of: jumpRequest) { _, _ in
+                isFollowingLatest = true
+                withAnimation(Theme.settle) {
+                    proxy.scrollTo(tailID, anchor: .bottom)
+                }
+            }
             .onAppear {
                 if isFollowingLatest { proxy.scrollTo(tailID, anchor: .bottom) }
             }
@@ -376,21 +425,21 @@ private struct JumpToLatestButton: View {
     let action: () -> Void
 
     var body: some View {
+        // The system's glass button: it floats over the words, reacts to the
+        // pointer, and turns opaque on its own under Reduce Transparency.
         Button(action: action) {
             Label(t("subtitles.jumpToLatest"), systemImage: "arrow.down")
                 .font(.App.label)
-                .padding(.horizontal, Theme.spacing12)
-                .padding(.vertical, Theme.spacing8)
         }
-        .buttonStyle(.plain)
-        .glassCard(radius: 999)
-        .help(t("subtitles.jumpToLatest"))
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .help(t("subtitles.jumpToLatest") + " (⌘↓)")
     }
 }
 
 private struct AudioRoutingButton: View {
     @Bindable var model: SubtitleModel
-    @State private var isPresented = false
+    @Binding var isPresented: Bool
 
     var body: some View {
         Button {
@@ -398,8 +447,8 @@ private struct AudioRoutingButton: View {
         } label: {
             Label(t("settings.tab.voice"), systemImage: "speaker.wave.2")
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(.glass)
+        .help(t("menu.session.audio") + " (⇧⌘A)")
         .popover(isPresented: $isPresented, arrowEdge: .top) {
             // A height the popover may shrink below rather than one it must
             // have: five sections of routing is taller than a laptop screen
@@ -653,7 +702,7 @@ private struct SessionSummaryButton: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .help(t("subtitles.setup.help"))
+        .help(t("subtitles.setup.help") + " (⇧⌘L)")
         .accessibilityIdentifier("session.setup")
         .accessibilityLabel(t("subtitles.setup"))
         .accessibilityValue(summary)
@@ -715,12 +764,8 @@ private struct SessionSetupPopover: View {
         }
         .padding(24)
         .frame(width: 370)
-        .background(Color(light: Color(white: 0.97), dark: Color(white: 0.16)))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20)
-                .strokeBorder(.separator.opacity(0.4), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
+        // No fill or border of its own: the popover is system glass, and a
+        // painted panel inside it fought the material and doubled the edge.
     }
 
     @ViewBuilder
@@ -965,16 +1010,20 @@ private struct TransportButton: View {
 
     var body: some View {
         Group {
+            // The window's one prominent action is Start; once running, Stop
+            // steps back to plain glass so the board, not the button, is what
+            // the eye returns to during a call.
             if isRunning {
                 Button(action: action) { label }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
             } else {
                 Button(action: action) { label }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
             }
         }
-        .controlSize(.regular)
-        .keyboardShortcut(.return, modifiers: .command)
+        .controlSize(.large)
+        // ⌘↩ lives on the Session menu, which is where it is discoverable.
+        .help((isRunning ? t("menu.session.stop") : t("menu.session.start")) + " (⌘↩)")
         .accessibilityIdentifier("session.transport")
     }
 
@@ -997,38 +1046,16 @@ private struct EmptyState: View {
     /// all — the microphone alone needs none.
     let scope: SubtitleModel.CaptureScope
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
-        VStack(spacing: Theme.spacing16) {
-            Image(systemName: symbol)
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
-
-            VStack(spacing: Theme.spacing8) {
-                Text(title)
-                    .font(.system(size: 20, weight: .medium))
-                    .tracking(-0.2)
-                    .foregroundStyle(.primary)
-
-                Text(message)
-                    .font(.App.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .frame(maxWidth: 380)
-            }
+        // The system's empty-state view: its type scale, spacing and symbol
+        // weight match every other empty window on the Mac, and it reads as
+        // one element to VoiceOver without further work.
+        ContentUnavailableView {
+            Label(title, systemImage: symbol)
+        } description: {
+            Text(message)
         }
-        .padding(Theme.spacing28)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var isWaiting: Bool {
-        switch status {
-        case .connecting, .waitingForCall, .running: return true
-        default: return false
-        }
+        .frame(maxWidth: 440)
     }
 
     private var symbol: String {
