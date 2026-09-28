@@ -40,6 +40,9 @@ jobs:
       artifact-basename: LiveTranslateBridge
       entitlements: LiveTranslateBridge/LiveTranslateBridge.entitlements
       make-dmg: true
+      # Release 说明取自 docs/releases/<标签>.md，与 CHANGELOG 同步维护；
+      # 缺失时回退为 GitHub 自动生成。只在首次创建 Release 时生效。
+      release-notes-file: docs/releases/${{ github.ref_name }}.md
       dmg-volume-name: Live Translate Bridge
       runs-on: xcode-27
     secrets: inherit

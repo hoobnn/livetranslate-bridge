@@ -69,6 +69,7 @@ open LiveTranslateBridge.xcodeproj    # 在 Xcode 里运行
 
 ## 文档
 
+- [更新日志](CHANGELOG.md)
 - [接力通话音频实测](docs/findings.md)
 - [采集链路重构](docs/audio-capture-2026-09-23.md) · [音频优化](docs/audio-optimization-2026-09-22.md) · [网络与上行优化](docs/network-audio-optimization-2026-09-28.md)
 - [qwen3.8 协议对接](docs/qwen38-protocol-validation-2026-09-22.md) · [服务端分段关联](docs/server-segmentation-2026-09-22.md)
