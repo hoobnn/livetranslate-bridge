@@ -58,7 +58,7 @@ open LiveTranslateBridge.xcodeproj    # 在 Xcode 里运行
 
 ## 发布
 
-推送 `v*` 标签后，CI 会完成构建、Developer ID 签名、公证，然后发布 GitHub Release 并更新 Homebrew tap。标签版本必须与工程里的 `MARKETING_VERSION` 一致。
+推送 main 和 PR 时 CI 只跑单元测试（`.github/workflows/ci.yml`）。推送 `v*` 标签后，`.github/workflows/release.yml` 会先跑同一套测试，再完成构建、Developer ID 签名、公证，然后发布 GitHub Release 并更新 Homebrew tap。标签版本必须与工程里的 `MARKETING_VERSION` 一致。
 
 ## 限制
 

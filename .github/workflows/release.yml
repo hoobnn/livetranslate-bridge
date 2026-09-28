@@ -1,0 +1,49 @@
+name: Release
+
+# 推送 v* 标签：测试 → 签名、公证、发布 GitHub Release → 同步 Homebrew cask。
+# 在分支上手动触发时只做签名公证构建（产物见 workflow run），不发布。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 发版不取消：公证做到一半被中断，最难收拾。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: test
+    permissions:
+      contents: write
+    uses: hoobnn/ci-workflows/.github/workflows/macos-release.yml@v1
+    with:
+      app-path: dist/LiveTranslateBridge.app
+      build-command: ./scripts/build-app.sh
+      artifact-basename: LiveTranslateBridge
+      entitlements: LiveTranslateBridge/LiveTranslateBridge.entitlements
+      make-dmg: true
+      dmg-volume-name: Live Translate Bridge
+      # Release 说明取自 docs/releases/<标签>.md，与 CHANGELOG 同步维护；
+      # 缺失时回退为 GitHub 自动生成。只在首次创建 Release 时生效。
+      release-notes-file: docs/releases/${{ github.ref_name }}.md
+      runs-on: xcode-27
+    secrets: inherit
+
+  homebrew:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: hoobnn/ci-workflows/.github/workflows/homebrew-cask.yml@v1
+    with:
+      cask: livetranslate-bridge
+      artifact-basename: LiveTranslateBridge
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit

@@ -1,0 +1,4 @@
+# xcode-27 是 GitHub 托管的 macOS 27 镜像标签，actionlint 的内置列表还不认识。
+self-hosted-runner:
+  labels:
+    - xcode-27
