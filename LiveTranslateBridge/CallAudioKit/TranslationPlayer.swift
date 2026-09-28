@@ -30,6 +30,16 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
     static let originalCeiling = 0.2
     /// Ducked original level while translated speech is audible.
     static let duckLevel: Float = 0.25
+    /// Translated speech is played faster, pitch unchanged, once this much
+    /// is queued, so the lag behind the speaker stays bounded instead of
+    /// growing until the 15 s cut discards a whole response.
+    static let catchUpBacklog = 3.0
+    /// Faster still past this.
+    static let rushBacklog = 6.0
+    /// Back to normal speed once the queue drains below this.
+    static let relaxedBacklog = 1.5
+    static let catchUpRate: Float = 1.15
+    static let rushRate: Float = 1.3
 
     private let control = DispatchQueue(label: "app.livetranslate.player", qos: .userInitiated)
     private let controlKey = DispatchSpecificKey<UInt8>()
@@ -40,6 +50,10 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         componentManufacturer: kAudioUnitManufacturer_Apple,
         componentFlags: 0, componentFlagsMask: 0
     ))
+    /// Time-compresses the translation lane under backlog. Bypassed at
+    /// normal speed so the common case is untouched by the phase vocoder.
+    private let timePitch = AVAudioUnitTimePitch()
+    private var playbackRate: Float = 1
     private let manualRendering: Bool
     private var prepared = false
     private var originalNode: AVAudioSourceNode?
@@ -123,10 +137,15 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
             )
             engine.attach(originalNode)
             engine.attach(translationNode)
+            engine.attach(timePitch)
             engine.attach(limiter)
+            timePitch.rate = 1
+            timePitch.bypass = true
+            playbackRate = 1
             do {
                 engine.connect(originalNode, to: engine.mainMixerNode, format: original)
-                engine.connect(translationNode, to: engine.mainMixerNode, format: translation)
+                engine.connect(translationNode, to: timePitch, format: translation)
+                engine.connect(timePitch, to: engine.mainMixerNode, format: translation)
                 engine.connect(engine.mainMixerNode, to: limiter, format: outputFormat)
                 engine.connect(limiter, to: engine.outputNode, format: outputFormat)
                 if manualRendering {
@@ -137,6 +156,7 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
                 engine.stop()
                 engine.detach(originalNode)
                 engine.detach(translationNode)
+                engine.detach(timePitch)
                 engine.detach(limiter)
                 if manualRendering { engine.disableManualRenderingMode() }
                 throw error
@@ -170,6 +190,7 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
             engine.stop()
             if let originalNode { engine.detach(originalNode) }
             if let translationNode { engine.detach(translationNode) }
+            engine.detach(timePitch)
             engine.detach(limiter)
             if manualRendering { engine.disableManualRenderingMode() }
             originalNode = nil
@@ -365,6 +386,7 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
     /// Called on `control`. Reports drain transitions the render thread cannot.
     private func updatePlaybackState() {
         guard prepared else { return }
+        adjustPlaybackRate()
         let playing = (translationRing?.availableFrames ?? 0) > 0
         if playing != reportedPlaying {
             reportedPlaying = playing
@@ -372,6 +394,28 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
         }
         reportQueues()
     }
+
+    /// Steps the translation lane between normal, catch-up and rush speeds
+    /// with hysteresis, so the rate changes a few times per backlog rather
+    /// than every tick. Called on `control`.
+    private func adjustPlaybackRate() {
+        let backlog = Double(translationRing?.availableFrames ?? 0) / Self.translationRate
+        var rate = playbackRate
+        if backlog >= Self.rushBacklog {
+            rate = Self.rushRate
+        } else if backlog >= Self.catchUpBacklog {
+            rate = max(rate, Self.catchUpRate)
+        } else if backlog < Self.relaxedBacklog {
+            rate = 1
+        }
+        guard rate != playbackRate else { return }
+        BridgeLog.audio.notice("translation backlog \(String(format: "%.1f", backlog), privacy: .public) s; playback rate \(playbackRate, privacy: .public) → \(rate, privacy: .public)")
+        playbackRate = rate
+        timePitch.rate = rate
+        timePitch.bypass = rate == 1
+    }
+
+    var playbackRateForTesting: Float { withControl { playbackRate } }
 
     private func reportQueues() {
         guard lastMetric.duration(to: .now) >= .seconds(2) else { return }

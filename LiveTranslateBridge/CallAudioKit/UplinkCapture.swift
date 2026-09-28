@@ -1,5 +1,4 @@
 import os
-import AVFoundation
 import CoreAudio
 import Foundation
 
@@ -16,11 +15,24 @@ import Foundation
 /// translation would otherwise have this capture read the loopback too —
 /// swallowing its own synthesised speech and translating it again. Naming the
 /// microphone here keeps the two apart. See `AudioInputDevice`.
+///
+/// Reads the device through a HAL IOProc, as `DownlinkTap` reads its
+/// aggregate, rather than through `AVAudioEngine`. The engine's input node
+/// exposes only the first stream of a device, so an aggregate's second and
+/// later members never arrived, and after switching the unit to a
+/// non-default device it kept the previous device's channel count. The IOProc
+/// sees every stream in the device's own layout, on the realtime thread, at
+/// the device's IO buffer size; and unlike two engines on one AUHAL, several
+/// IOProcs share a device without starving each other.
 nonisolated public final class UplinkCapture: @unchecked Sendable {
-    private let engine = AVAudioEngine()
-    private var sink: AVAudioSinkNode?
+    private var deviceID: AudioDeviceID = 0
+    private var ioProcID: AudioDeviceIOProcID?
+    private let lock = NSLock()
 
-    public private(set) var format: AVAudioFormat?
+    /// Channels across every input stream, and the device's nominal rate.
+    public private(set) var channelCount = 0
+    public private(set) var sampleRate: Double = 0
+
     /// Called on the realtime IO thread with the device's own IO buffer
     /// (typically 512 frames, ~11 ms). Read once at `start()`.
     public var onBuffer: (@Sendable (CapturedAudio) -> Void)?
@@ -28,9 +40,11 @@ nonisolated public final class UplinkCapture: @unchecked Sendable {
     public init() {}
     deinit { stop() }
 
-    /// Opens the engine against `device`, or the system default when nil.
+    /// Opens `device`, or the system default input when nil.
     public func start(device: AudioInputDevice? = nil) throws {
-        guard sink == nil else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard ioProcID == nil else { return }
         guard case .granted = AudioCapturePermission.current else {
             throw CallAudioError(
                 "no microphone permission (status: "
@@ -38,79 +52,111 @@ nonisolated public final class UplinkCapture: @unchecked Sendable {
                 + "System Settings > Privacy & Security > Microphone"
             )
         }
-        let input = engine.inputNode
 
-        // Selecting the device has to happen on the input audio unit before the
-        // format is read: `AVAudioEngine` has no device property of its own on
-        // macOS, and `outputFormat(forBus:)` reports the *current* device, so
-        // reading it first would capture the format of the wrong one.
-        if let device {
-            // Mirrors `TranslationPlayer`: the device is set on the unit
-            // itself, in the global scope, which is where the AUHAL keeps it.
-            var status = OSStatus(kAudioUnitErr_InvalidElement)
-            input.withAudioUnit { unit in
-                guard let unit else { return }
-                var deviceID = device.id
-                status = AudioUnitSetProperty(
-                    unit,
-                    kAudioOutputUnitProperty_CurrentDevice,
-                    kAudioUnitScope_Global,
-                    0,
-                    &deviceID,
-                    UInt32(MemoryLayout<AudioDeviceID>.size)
-                )
-            }
-            guard status == noErr else {
-                throw CallAudioError.status(
-                    "selecting input device \(device.name)", status
-                )
-            }
-            BridgeLog.tap.notice(
-                "uplink capture bound to \(device.name, privacy: .public)"
-            )
+        let id = device?.id ?? AudioObject.value(
+            AudioObjectID(kAudioObjectSystemObject),
+            kAudioHardwarePropertyDefaultInputDevice,
+            default: AudioDeviceID(0)
+        )
+        let name = device?.name ?? "(system default)"
+        guard id != 0 else { throw CallAudioError("no input device available") }
+
+        let streams = AudioObject.objectList(
+            id, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput
+        )
+        guard !streams.isEmpty else {
+            throw CallAudioError("input device \(name) has no input streams")
         }
-
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0 else {
-            throw CallAudioError(
-                "input device \(device?.name ?? "(system default)") reports no format"
+        // The IOProc receives each stream in its virtual format. Every device
+        // the HAL presents today uses Float32 there; anything else would be
+        // misread as floats, so refuse it outright.
+        var channels = 0
+        for stream in streams {
+            let format = AudioObject.value(
+                stream, kAudioStreamPropertyVirtualFormat,
+                default: AudioStreamBasicDescription()
             )
+            guard format.mFormatID == kAudioFormatLinearPCM,
+                  format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+                  format.mBitsPerChannel == 32, format.mChannelsPerFrame > 0 else {
+                throw CallAudioError("unsupported input format on \(name): \(format)")
+            }
+            channels += Int(format.mChannelsPerFrame)
         }
-        format = inputFormat
+        let rate = AudioObject.value(
+            id, kAudioDevicePropertyNominalSampleRate, default: Float64(0)
+        )
+        guard rate > 0 else { throw CallAudioError("input device \(name) reports no sample rate") }
 
-        // A sink node receives the input unit's IO buffers on the realtime
-        // thread as they arrive. `installTap` instead batches into blocks of
-        // at least 100 ms on a non-realtime thread, which held the end of
-        // every utterance back from the service by that much.
         let handler = onBuffer
-        let channels = Int(inputFormat.channelCount)
-        let sampleRate = inputFormat.sampleRate
-        let interleaved = inputFormat.isInterleaved
-        let sink = AVAudioSinkNode { _, _, list in
-            if let handler, let buffer = CapturedAudio(
-                buffers: list, channelCount: channels,
-                sampleRate: sampleRate, interleaved: interleaved
-            ) { handler(buffer) }
-            return noErr
+        var procID: AudioDeviceIOProcID?
+        let createStatus = AudioDeviceCreateIOProcIDWithBlock(&procID, id, nil) {
+            _, inputData, _, _, _ in
+            // No fixed channel count: an aggregate that gains or loses a
+            // member mid-session changes shape before the route watcher has
+            // rebuilt the session, and the buffers in between are still
+            // speech. Each buffer is bounds-checked on its own layout.
+            guard let handler, let buffer = CapturedAudio(
+                buffers: inputData, sampleRate: rate
+            ) else { return }
+            handler(buffer)
         }
-        engine.attach(sink)
-        engine.connect(input, to: sink, format: inputFormat)
-        self.sink = sink
+        guard createStatus == noErr, let procID else {
+            throw CallAudioError.status("AudioDeviceCreateIOProcID on \(name)", createStatus)
+        }
+        Self.disableOutput(of: procID, on: id)
 
-        do {
-            try engine.start()
-        } catch {
-            engine.detach(sink)
-            self.sink = nil
-            throw CallAudioError("cannot start audio engine: \(error)")
+        let startStatus = AudioDeviceStart(id, procID)
+        guard startStatus == noErr else {
+            AudioDeviceDestroyIOProcID(id, procID)
+            throw CallAudioError.status("AudioDeviceStart on \(name)", startStatus)
         }
+        deviceID = id
+        ioProcID = procID
+        channelCount = channels
+        sampleRate = rate
+        BridgeLog.tap.notice(
+            "uplink capture bound to \(name, privacy: .public): \(rate, privacy: .public) Hz, \(streams.count, privacy: .public) stream(s), \(channels, privacy: .public) ch"
+        )
     }
 
     public func stop() {
-        guard let sink else { return }
-        engine.stop()
-        engine.detach(sink)
-        self.sink = nil
-        format = nil
+        lock.lock()
+        defer { lock.unlock() }
+        guard let procID = ioProcID else { return }
+        AudioDeviceStop(deviceID, procID)
+        AudioDeviceDestroyIOProcID(deviceID, procID)
+        ioProcID = nil
+        deviceID = 0
+        channelCount = 0
+        sampleRate = 0
+    }
+
+    /// A duplex device (a headset, an interface) would otherwise hand this
+    /// proc its output streams too. It never writes them, so tell the HAL not
+    /// to run them for it. Best effort: a device that refuses still works.
+    private static func disableOutput(of procID: AudioDeviceIOProcID, on device: AudioDeviceID) {
+        var address = AudioObject.address(
+            kAudioDevicePropertyIOProcStreamUsage, scope: kAudioObjectPropertyScopeOutput
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr,
+              size >= UInt32(MemoryLayout<AudioHardwareIOProcStreamUsage>.size) else { return }
+        let raw = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size), alignment: MemoryLayout<AudioHardwareIOProcStreamUsage>.alignment
+        )
+        defer { raw.deallocate() }
+        let usage = raw.assumingMemoryBound(to: AudioHardwareIOProcStreamUsage.self)
+        usage.pointee.mIOProc = unsafeBitCast(procID, to: UnsafeMutableRawPointer.self)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, raw) == noErr else { return }
+        let count = Int(usage.pointee.mNumberStreams)
+        // `mStreamIsOn` is a C flexible array: one flag per stream, laid out
+        // past the end of the struct Swift sees. Written through the raw
+        // buffer at the field's offset, never through a Swift copy of it.
+        guard count > 0,
+              let offset = MemoryLayout<AudioHardwareIOProcStreamUsage>.offset(of: \.mStreamIsOn),
+              offset + count * MemoryLayout<UInt32>.size <= Int(size) else { return }
+        (raw + offset).assumingMemoryBound(to: UInt32.self).update(repeating: 0, count: count)
+        AudioObjectSetPropertyData(device, &address, 0, nil, size, raw)
     }
 }

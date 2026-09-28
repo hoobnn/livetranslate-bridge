@@ -1,5 +1,7 @@
 import AVFoundation
+import CoreAudio
 import Foundation
+import Synchronization
 import Testing
 @testable import LiveTranslateBridge
 
@@ -14,10 +16,36 @@ struct AudioRoutePolicyTests {
         let loopback = AudioInputDevice(id: 2, name: "BlackHole 2ch", uid: "bh", hasOutputStreams: true)
         #expect(!usb.isKnownLoopback)
         #expect(loopback.isKnownLoopback)
-        #expect(!AudioRoutePolicy.feedsOwnOutput(inputUID: "usb", inputIsLoopback: false,
-            localUID: "usb", remoteUID: "usb"))
-        #expect(AudioRoutePolicy.feedsOwnOutput(inputUID: "bh", inputIsLoopback: true,
-            localUID: "bh", remoteUID: nil))
+        let usbOut = AudioOutputDevice(id: 1, name: "USB Audio Interface", uid: "usb", hasInputStreams: true)
+        let bhOut = AudioOutputDevice(id: 2, name: "BlackHole 2ch", uid: "bh", hasInputStreams: true)
+        #expect(!AudioRoutePolicy.feedsOwnOutput(input: usb, outputs: [usbOut, usbOut]))
+        #expect(AudioRoutePolicy.feedsOwnOutput(input: loopback, outputs: [bhOut, nil]))
+        #expect(!AudioRoutePolicy.feedsOwnOutput(input: loopback, outputs: [nil, usbOut]))
+    }
+
+    /// A user-named aggregate hides the loopback inside it; so does a
+    /// multi-output device on the other side. Either way the app would read
+    /// back its own translation.
+    @Test func aggregatesAreCheckedThroughTheirMembers() {
+        let blackHole = AudioDeviceMember(uid: "bh", name: "BlackHole 2ch")
+        let mic = AudioDeviceMember(uid: "mic", name: "MacBook Pro Microphone")
+        let aggregate = AudioInputDevice(id: 3, name: "Studio", uid: "agg", hasOutputStreams: false,
+                                         members: [mic, blackHole])
+        #expect(aggregate.isKnownLoopback)
+        #expect(aggregate.loopbackUIDs == ["bh"])
+
+        let bhOut = AudioOutputDevice(id: 2, name: "BlackHole 2ch", uid: "bh", hasInputStreams: true)
+        #expect(AudioRoutePolicy.feedsOwnOutput(input: aggregate, outputs: [bhOut]))
+
+        let speakers = AudioDeviceMember(uid: "spk", name: "MacBook Pro Speakers")
+        let multiOutput = AudioOutputDevice(id: 4, name: "Both", uid: "multi", hasInputStreams: false,
+                                            members: [speakers, blackHole])
+        let blackHoleIn = AudioInputDevice(id: 2, name: "BlackHole 2ch", uid: "bh", hasOutputStreams: true)
+        #expect(AudioRoutePolicy.feedsOwnOutput(input: blackHoleIn, outputs: [nil, multiOutput]))
+
+        let plainMics = AudioInputDevice(id: 5, name: "Two Mics", uid: "mics", hasOutputStreams: false,
+                                         members: [mic, AudioDeviceMember(uid: "usb", name: "USB Mic")])
+        #expect(!AudioRoutePolicy.feedsOwnOutput(input: plainMics, outputs: [bhOut, multiOutput]))
     }
 }
 
@@ -157,6 +185,42 @@ struct AudioPlaybackTests {
 }
 
 struct AudioQueueGenerationTests {
+    /// A backlog speeds translated speech up rather than letting the lag
+    /// grow, and normal speed returns once it drains.
+    @Test func backlogSpeedsPlaybackUpUntilItDrains() throws {
+        let player = TranslationPlayer(manualRendering: true)
+        try player.start(device: nil)
+        defer { player.stop() }
+        #expect(player.playbackRateForTesting == 1)
+        // 4 s of 24 kHz Int16.
+        player.enqueue(Data(repeating: 0, count: 192_000))
+        _ = try player.renderOffline(frames: 1024)
+        #expect(player.playbackRateForTesting == TranslationPlayer.catchUpRate)
+        player.enqueue(Data(repeating: 0, count: 144_000))
+        _ = try player.renderOffline(frames: 1024)
+        #expect(player.playbackRateForTesting == TranslationPlayer.rushRate)
+        player.flush()
+        _ = try player.renderOffline(frames: 1024)
+        #expect(player.playbackRateForTesting == 1)
+    }
+
+    /// Sped-up speech still comes out: a format the time-pitch unit refused
+    /// would render silence rather than throw.
+    @Test func spedUpTranslationIsStillAudible() throws {
+        let player = TranslationPlayer(manualRendering: true)
+        try player.start(device: nil)
+        defer { player.stop() }
+        var samples = (0..<96_000).map { Int16(12_000 * sin(Double($0) * 2 * .pi * 440 / 24_000)) }
+        player.enqueue(Data(bytes: &samples, count: samples.count * 2))
+        var audible = false
+        for _ in 0..<16 {
+            let output = try player.renderOffline(frames: 1024)
+            audible = audible || (0..<Int(output.frameLength)).contains { abs(output.floatChannelData![0][$0]) > 0.05 }
+        }
+        #expect(player.playbackRateForTesting == TranslationPlayer.catchUpRate)
+        #expect(audible)
+    }
+
     @Test func staleSocketAudioCannotReachReplacementPlayer() throws {
         let path = TranslationPlaybackPath()
         let first = TranslationPlayer(manualRendering: true)
@@ -216,6 +280,140 @@ struct CaptureConversionTests {
         let pcm = try Resampler(sourceFormat: format).convert(buffer)
         let peak = pcm.withUnsafeBytes { raw in raw.bindMemory(to: Int16.self).map { abs(Int32($0)) }.max() ?? 0 }
         #expect(peak > 1000)
+    }
+
+    /// Four-channel blocks through a fresh queue; returns each block's
+    /// peak over its second half, past the gain ramp from the block before.
+    private func foldedPeaks(_ blocks: [AVAudioPCMBuffer]) throws -> [Float] {
+        let delivered = DispatchSemaphore(value: 0)
+        let peaks = Mutex<[Float]>([])
+        let queue = RealtimeAudioQueue(label: "test.audio.fold") { mono in
+            #expect(mono.format.channelCount == 1)
+            let tail = (Int(mono.frameLength) / 2)..<Int(mono.frameLength)
+            peaks.withLock { $0.append(tail.map { abs(mono.floatChannelData![0][$0]) }.max() ?? 0) }
+            delivered.signal()
+        } onDrop: { _ in Issue.record("multichannel capture was dropped") }
+        for block in blocks {
+            queue.enqueue(block)
+            #expect(delivered.wait(timeout: .now() + 3) == .success)
+        }
+        return peaks.withLock { $0 }
+    }
+
+    /// A 480-frame four-channel block; `fill(channel, frame)` gives each sample.
+    private func fourChannels(interleaved: Bool, fill: (Int, Int) -> Float) throws -> AVAudioPCMBuffer {
+        let layout = try #require(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4))
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
+                                   interleaved: interleaved, channelLayout: layout)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480))
+        buffer.frameLength = 480
+        for channel in 0..<4 {
+            for frame in 0..<480 {
+                if interleaved { buffer.floatChannelData![0][frame * 4 + channel] = fill(channel, frame) }
+                else { buffer.floatChannelData![channel][frame] = fill(channel, frame) }
+            }
+        }
+        return buffer
+    }
+
+    private func sine(_ frame: Int) -> Float { 0.4 * sin(Float(frame) * 2 * .pi * 440 / 48_000) }
+
+    /// More than two channels cannot be described without a layout, and with a
+    /// discrete layout the converter renders silence. The queue folds them to
+    /// mono, so a microphone on any input of an interface reaches ASR at level,
+    /// and the same signal on two inputs is averaged rather than doubled.
+    @Test(arguments: [false, true])
+    func multichannelCaptureIsFoldedToMono(interleaved: Bool) throws {
+        // Only input 3 carries signal.
+        let single = try fourChannels(interleaved: interleaved) { $0 == 2 ? sine($1) : 0 }
+        #expect(abs(try foldedPeaks([single])[0] - 0.4) < 0.01)
+        // Inputs 1 and 2 carry the same programme: averaged, not summed to 0.8.
+        let doubled = try fourChannels(interleaved: interleaved) { $0 < 2 ? sine($1) : 0 }
+        let peaks = try foldedPeaks([doubled, doubled])
+        #expect(abs(peaks[1] - 0.4) < 0.01)
+    }
+
+    /// An idle input whose noise sits just under speech level must not flip
+    /// in and out of the average and put a tremolo on the microphone.
+    @Test func idleInputNoiseDoesNotPumpTheFold() throws {
+        var generator = SystemRandomNumberGenerator()
+        // −58 dBFS of noise on input 2, the voice on input 1.
+        let blocks = try (0..<40).map { _ in
+            try fourChannels(interleaved: false) { channel, frame in
+                channel == 0 ? sine(frame)
+                    : channel == 1 ? Float.random(in: -0.00126...0.00126, using: &generator) : 0
+            }
+        }
+        let peaks = try foldedPeaks(blocks)
+        #expect(peaks.allSatisfy { abs($0 - 0.4) < 0.01 })
+    }
+
+    /// An aggregate's input arrives as one buffer per member stream, each
+    /// interleaving its own channels. Every channel of every stream has to
+    /// reach the fold, not only the first stream's.
+    @Test func multiStreamCaptureReachesEveryChannel() throws {
+        let frames = 256
+        let first = UnsafeMutablePointer<Float>.allocate(capacity: frames * 2)
+        let second = UnsafeMutablePointer<Float>.allocate(capacity: frames * 2)
+        defer { first.deallocate(); second.deallocate() }
+        first.update(repeating: 0, count: frames * 2)
+        second.update(repeating: 0, count: frames * 2)
+        // Signal only on the second stream's first channel: overall channel 3.
+        for frame in 0..<frames { second[frame * 2] = 0.4 * sin(Float(frame) * 2 * .pi * 440 / 48_000) }
+        let list = AudioBufferList.allocate(maximumBuffers: 2)
+        defer { free(list.unsafeMutablePointer) }
+        list[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(frames * 8), mData: first)
+        list[1] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(frames * 8), mData: second)
+        let captured = try #require(CapturedAudio(buffers: list.unsafePointer, sampleRate: 48_000))
+        #expect(captured.channelCount == 4)
+        #expect(captured.frameCount == frames)
+
+        let delivered = DispatchSemaphore(value: 0)
+        let peak = Mutex<Float>(0)
+        let queue = RealtimeAudioQueue(label: "test.audio.streams") { mono in
+            peak.withLock { value in
+                for frame in 0..<Int(mono.frameLength) { value = max(value, abs(mono.floatChannelData![0][frame])) }
+            }
+            delivered.signal()
+        } onDrop: { _ in Issue.record("multi-stream capture was dropped") }
+        queue.enqueue(captured)
+        #expect(delivered.wait(timeout: .now() + 3) == .success)
+        #expect(abs(peak.withLock { $0 } - 0.4) < 0.01)
+    }
+
+    /// The whole in-app input path after capture: 48 kHz stereo in IO-sized
+    /// blocks becomes 40 ms chunks of 16 kHz mono Int16 at the same pitch
+    /// and duration, in order.
+    @Test func capturePathProducesPacedSixteenKilohertzChunks() throws {
+        let client = TranslationClient(config: .init(apiKey: "test", workspaceID: "test", targetLanguage: "en"))
+        client.simulateDropForTesting()
+        let path = SubtitleModel.AudioPath(direction: .local)
+        path.install(client: client)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        for block in 0..<94 {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+            buffer.frameLength = 512
+            for channel in 0..<2 {
+                for frame in 0..<512 {
+                    buffer.floatChannelData![channel][frame] = 0.3 * sin(Float(block * 512 + frame) * 2 * .pi * 440 / 48_000)
+                }
+            }
+            path.enqueueForTesting(buffer)
+            // Keep the ring from filling: the IO thread publishes at this pace.
+            if block % 8 == 7 { path.drainForTesting() }
+        }
+        path.drainForTesting()
+        let chunks = client.bufferedChunksForTesting
+        #expect(chunks.allSatisfy { $0.count == 1_280 })
+        let samples = chunks.flatMap { chunk in chunk.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) } }
+        // 94 × 512 frames at 48 kHz is 1.003 s; whole 40 ms chunks of it.
+        #expect((15_360...16_040).contains(samples.count))
+        var crossings = 0
+        for index in 1..<samples.count where (samples[index - 1] < 0) != (samples[index] < 0) { crossings += 1 }
+        let hertz = Double(crossings) / 2 / (Double(samples.count) / 16_000)
+        #expect(abs(hertz - 440) < 5)
+        let loudest = samples.map { abs(Int32($0)) }.max() ?? 0
+        #expect(abs(Double(loudest) / 32_768 - 0.3) < 0.02)
     }
 
     /// Helpers nested in an app bundle belong to that app, not to themselves.

@@ -1412,97 +1412,124 @@ struct ReconnectBufferTests {
     }
 }
 
-/// The silence window is the app's largest lever on how fast a line appears,
-/// and the one setting the service silently ignores if it is malformed. What
-/// is worth pinning is that it reaches the wire at all, on both schemas, and
-/// that a value outside the service's range is corrected here rather than
-/// rejected there — a refused `session.update` reads as a dead socket.
-struct SegmentationConfigTests {
+/// qwen3.8 owns segmentation, and the session schema is the one thing a
+/// refused `session.update` turns into a dead socket. What is worth pinning is
+/// that every voice mode sends the nested speaker-detection block and none of
+/// the qwen3.5 fields.
+struct SessionConfigTests {
     private func config(
-        segmentation: TranslationClient.Config.Segmentation,
-        voice: TranslationClient.Config.Voice = .preset
+        voice: TranslationClient.Config.Voice = .preset,
+        phrases: [String: String] = [:]
     ) -> TranslationClient.Config {
         .init(apiKey: "test", workspaceID: "test", targetLanguage: "zh",
               sourceLanguage: "en", wantsAudio: voice != .preset,
-              voice: voice, segmentation: segmentation)
+              phrases: phrases, voice: voice)
     }
 
     private func turnDetection(
         _ config: TranslationClient.Config
     ) -> [String: Any]? {
-        let session = config.sessionUpdate
-        if let legacy = session["turn_detection"] as? [String: Any] { return legacy }
-        let audio = session["audio"] as? [String: Any]
+        let audio = config.sessionUpdate["audio"] as? [String: Any]
         return (audio?["input"] as? [String: Any])?["turn_detection"] as? [String: Any]
     }
 
     @Test func allVoiceModesUseQwen38SpeakerDetection() {
-        let current = config(segmentation: .responsive)
-        #expect(current.modelID == TranslationClient.model)
-        #expect(turnDetection(current)?["type"] as? String == "speaker_detection")
-        #expect(turnDetection(current)?["threshold"] as? Double == 0.5)
-        #expect(current.sessionUpdate["turn_detection"] == nil)
-        #expect(current.sessionUpdate["input_audio_transcription"] == nil)
-        #expect(turnDetection(current)?["silence_duration_ms"] == nil)
-
-        // The clone path builds a different session object entirely, so it
-        // is its own chance to drop the field.
-        let cloning = config(segmentation: .responsive, voice: .cloneOnce)
-        #expect(cloning.modelID == TranslationClient.model)
-        #expect(turnDetection(cloning)?["type"] as? String == "speaker_detection")
-        #expect(turnDetection(cloning)?["silence_duration_ms"] == nil)
-    }
-
-    @Test func defaultConfigPreservesServicePauseWindow() {
-        let current = TranslationClient.Config(apiKey: "test", workspaceID: "test", targetLanguage: "zh")
-        #expect(turnDetection(current)?["type"] as? String == "speaker_detection")
-        #expect(turnDetection(config(segmentation: .serviceDefault, voice: .cloneOnce))?["type"] as? String == "speaker_detection")
-        #expect(turnDetection(config(segmentation: .listening, voice: .cloneOnce))?["silence_duration_ms"] == nil)
-    }
-
-    @Test func valuesOutsideTheServicesRangeAreClampedNotSent() {
-        let tooShort = TranslationClient.Config.Segmentation(
-            silenceDuration: 10, threshold: -4
-        )
-        #expect(tooShort.silenceDuration == 200)
-        #expect(tooShort.threshold == -1)
-
-        let tooLong = TranslationClient.Config.Segmentation(
-            silenceDuration: 99_000, threshold: 4
-        )
-        #expect(tooLong.silenceDuration == 6_000)
-        #expect(tooLong.threshold == 1)
-    }
-
-    @Test func theModelPassesItsOwnSettingToTheClient() async {
-        await MainActor.run {
-            SubtitleModel.withTemporaryDefaults {
-                let model = SubtitleModel()
-                #expect(model.silenceDurationMS == 1000)
-                model.silenceDurationMS = 300
-                model.vadThreshold = 0.1
-                #expect(model.segmentation.silenceDuration == 300)
-                #expect(model.segmentation.threshold == 0.1)
-                #expect(!model.usesDefaultSegmentation)
-
-                model.resetSegmentationToDefault()
-                #expect(model.usesDefaultSegmentation)
-                #expect(model.segmentation == .serviceDefault)
-            }
+        for voice in [TranslationClient.Config.Voice.preset, .cloneOnce, .cloneEachReply] {
+            let current = config(voice: voice)
+            #expect(current.modelID == TranslationClient.model)
+            #expect(turnDetection(current)?["type"] as? String == "speaker_detection")
+            #expect(turnDetection(current)?["threshold"] as? Double == 0.5)
+            #expect(current.sessionUpdate["turn_detection"] == nil)
+            #expect(current.sessionUpdate["input_audio_transcription"] == nil)
+            #expect(turnDetection(current)?["silence_duration_ms"] == nil)
         }
     }
 
-    @Test func theSettingSurvivesRelaunch() async {
+    /// The glossary reaches the wire as `translation.corpus.phrases`, and an
+    /// empty one sends no corpus at all.
+    @Test func glossaryIsSentAsCorpusPhrases() {
+        let translation = config(phrases: ["人工智能": "AI"])
+            .sessionUpdate["translation"] as? [String: Any]
+        let corpus = translation?["corpus"] as? [String: Any]
+        #expect(corpus?["phrases"] as? [String: String] == ["人工智能": "AI"])
+
+        let plain = config().sessionUpdate["translation"] as? [String: Any]
+        #expect(plain?["corpus"] == nil)
+    }
+
+    @Test func glossaryParsesOnePairPerLine() {
+        let parsed = Glossary.parse("""
+        人工智能 = Artificial Intelligence
+        # a comment
+        Kubernetes => K8s
+        机器学习 → machine learning
+        no separator here
+        = missing source
+        大模型\tLLM
+        """)
+        #expect(parsed == [
+            "人工智能": "Artificial Intelligence",
+            "Kubernetes": "K8s",
+            "机器学习": "machine learning",
+            "大模型": "LLM",
+        ])
+    }
+
+    @Test func glossarySurvivesRelaunch() async {
         await MainActor.run {
             SubtitleModel.withTemporaryDefaults {
                 let first = SubtitleModel()
-                first.silenceDurationMS = 600
-                first.vadThreshold = 0.35
+                first.glossaryText = "报价 = quote"
+                first.gatesMicrophoneSilence = true
 
                 let second = SubtitleModel()
-                #expect(second.silenceDurationMS == 600)
-                #expect(second.vadThreshold == 0.35)
+                #expect(second.glossary == ["报价": "quote"])
+                #expect(second.gatesMicrophoneSilence)
             }
         }
+    }
+}
+
+/// The gate stops paying for silence without costing a word: it must keep
+/// sending through a normal pause, stop only after the hangover, and hand
+/// back the pre-roll in order when sound resumes.
+struct SilenceGateTests {
+    /// 40 ms at 16 kHz mono Int16, every sample at `level`.
+    private func chunk(_ level: Int16) -> Data {
+        var samples = [Int16](repeating: level, count: 640)
+        return Data(bytes: &samples, count: samples.count * 2)
+    }
+
+    @Test func pausesOnlyAfterTheHangover() {
+        var gate = SilenceGate(threshold: 8, hangoverSeconds: 0.2, prerollSeconds: 0.08)
+        #expect(gate.admit(chunk(1_000)).count == 1)
+        // 0.2 s is five 40 ms chunks: all five still go out, then it shuts.
+        for _ in 0..<5 { #expect(gate.admit(chunk(0)).count == 1) }
+        #expect(!gate.isOpen)
+        #expect(gate.admit(chunk(0)).isEmpty)
+    }
+
+    @Test func resumesWithThePrerollInOrder() {
+        var gate = SilenceGate(threshold: 8, hangoverSeconds: 0.04, prerollSeconds: 0.08)
+        _ = gate.admit(chunk(0))
+        #expect(!gate.isOpen)
+        let quiet = [chunk(1), chunk(2), chunk(3)]
+        for part in quiet { #expect(gate.admit(part).isEmpty) }
+        let onset = chunk(500)
+        // Only the last 80 ms of silence is kept ahead of the onset.
+        #expect(gate.admit(onset) == [chunk(2), chunk(3), onset])
+        #expect(gate.isOpen)
+    }
+
+    @Test func soundDuringTheHangoverKeepsItOpen() {
+        var gate = SilenceGate(threshold: 8, hangoverSeconds: 0.08, prerollSeconds: 0)
+        _ = gate.admit(chunk(0))
+        _ = gate.admit(chunk(900))
+        _ = gate.admit(chunk(0))
+        #expect(gate.isOpen)
+    }
+
+    @Test func peakHandlesTheMostNegativeSample() {
+        #expect(SilenceGate.peak(of: chunk(.min)) == 32_768)
     }
 }

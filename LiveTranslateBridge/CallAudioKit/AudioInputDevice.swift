@@ -19,11 +19,28 @@ nonisolated public struct AudioInputDevice: Identifiable, Hashable, Sendable {
     /// interfaces can also expose both input and output streams.
     public let hasOutputStreams: Bool
 
-    /// Duplex hardware is not necessarily a virtual loopback device.
+    /// Sub-devices when this is an aggregate, empty otherwise.
+    public var members: [AudioDeviceMember] = []
+
+    /// Duplex hardware is not necessarily a virtual loopback device. An
+    /// aggregate counts as one when any member is: its name is the user's
+    /// own, but a loopback inside it still hands our output back as input.
     public var isKnownLoopback: Bool {
-        let label = (name + " " + (uid ?? "")).lowercased()
-        return ["blackhole", "loopback", "soundflower"].contains { label.contains($0) }
+        AudioDeviceMember.isLoopbackLabel(name + " " + (uid ?? ""))
+            || members.contains(where: \.isKnownLoopback)
     }
+
+    /// Every UID through which this input could read back a loopback's
+    /// output: its own when it is one, and each loopback member's.
+    public var loopbackUIDs: Set<String> {
+        var uids = Set(members.filter(\.isKnownLoopback).map(\.uid))
+        if let uid, AudioDeviceMember.isLoopbackLabel(name + " " + uid) { uids.insert(uid) }
+        return uids
+    }
+
+    /// The private aggregate `DownlinkTap` wraps its tap in. Visible to this
+    /// process while a session runs, and never a microphone.
+    private static let tapAggregatePrefix = "call-audio-bridge-agg"
 
     /// Every device that can record, in the order Core Audio lists them.
     public static func inputs() -> [AudioInputDevice] {
@@ -33,14 +50,17 @@ nonisolated public struct AudioInputDevice: Identifiable, Hashable, Sendable {
         ).compactMap { device in
             guard streamCount(device, scope: kAudioObjectPropertyScopeInput) > 0
             else { return nil }
+            let uid = AudioObject.string(device, kAudioDevicePropertyDeviceUID)
+            if uid?.hasPrefix(tapAggregatePrefix) == true { return nil }
             return AudioInputDevice(
                 id: device,
                 name: AudioObject.string(device, kAudioObjectPropertyName)
                     ?? "Device \(device)",
-                uid: AudioObject.string(device, kAudioDevicePropertyDeviceUID),
+                uid: uid,
                 hasOutputStreams: streamCount(
                     device, scope: kAudioObjectPropertyScopeOutput
-                ) > 0
+                ) > 0,
+                members: AudioObject.aggregateMembers(device)
             )
         }
     }

@@ -46,9 +46,10 @@ nonisolated enum AudioObject {
 
     static func objectList(
         _ object: AudioObjectID,
-        _ selector: AudioObjectPropertySelector
+        _ selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
     ) -> [AudioObjectID] {
-        var addr = address(selector)
+        var addr = address(selector, scope: scope)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(object, &addr, 0, nil, &size) == noErr,
               size > 0 else { return [] }
@@ -59,6 +60,33 @@ nonisolated enum AudioObject {
         guard AudioObjectGetPropertyData(object, &addr, 0, nil, &size, &ids) == noErr
         else { return [] }
         return ids
+    }
+
+    /// Channels across every stream in `scope`. `kAudioDevicePropertyStreamFormat`
+    /// describes only the first stream, which for an aggregate is one member.
+    static func channelCount(_ device: AudioObjectID, scope: AudioObjectPropertyScope) -> Int {
+        var addr = address(kAudioDevicePropertyStreamConfiguration, scope: scope)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &addr, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, raw) == noErr else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    /// The devices an aggregate (or multi-output device) is built from, empty
+    /// for anything else. Active members only: a disconnected sub-device
+    /// contributes no streams and cannot carry audio either way.
+    static func aggregateMembers(_ device: AudioObjectID) -> [AudioDeviceMember] {
+        objectList(device, kAudioAggregateDevicePropertyActiveSubDeviceList).compactMap { member in
+            guard let uid = string(member, kAudioDevicePropertyDeviceUID) else { return nil }
+            return AudioDeviceMember(
+                uid: uid, name: string(member, kAudioObjectPropertyName) ?? uid
+            )
+        }
     }
 
     /// OSStatus values are usually four-character codes; decimal alone is useless.
@@ -80,5 +108,26 @@ nonisolated public struct CallAudioError: Error, CustomStringConvertible {
 
     static func status(_ what: String, _ status: OSStatus) -> CallAudioError {
         CallAudioError("\(what) failed: \(AudioObject.describe(status))")
+    }
+}
+
+/// One device inside an aggregate.
+nonisolated public struct AudioDeviceMember: Hashable, Sendable {
+    public let uid: String
+    public let name: String
+
+    public init(uid: String, name: String) {
+        self.uid = uid
+        self.name = name
+    }
+
+    var isKnownLoopback: Bool { AudioDeviceMember.isLoopbackLabel(name + " " + uid) }
+
+    /// The virtual loopback drivers this app knows by name. Duplex hardware
+    /// (headsets, USB interfaces) also exposes input and output streams, so
+    /// capability alone does not identify one.
+    static func isLoopbackLabel(_ label: String) -> Bool {
+        let lowered = label.lowercased()
+        return ["blackhole", "loopback", "soundflower"].contains { lowered.contains($0) }
     }
 }

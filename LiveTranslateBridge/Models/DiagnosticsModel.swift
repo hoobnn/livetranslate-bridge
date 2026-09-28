@@ -142,11 +142,11 @@ final class DiagnosticsModel {
     /// triggers the microphone permission prompt.
     ///
     /// `sessionOwnsInput` is the running session's claim on the microphone.
-    /// The meter opens its own `UplinkCapture` on the same device, and two
-    /// `AVAudioEngine`s on one input contend for the AUHAL — the HAL logs
-    /// `cannot add handler to N from N - dropping` and one of them gets no
-    /// buffers, which reads as a dead meter or a session that hears nothing.
-    /// The session wins: it is the feature, the meter is a probe.
+    /// The meter would open its own `UplinkCapture` on the same device. When
+    /// capture ran on `AVAudioEngine`, two engines on one input contended for
+    /// the AUHAL and one of them got no buffers; HAL IOProcs can share a
+    /// device, but the session still wins: it is the feature, the meter is a
+    /// probe, and a second proc is one more realtime callback on its device.
     func startMetering(
         sourceBundleID: String = callAudioBundleID,
         inputDevice: AudioInputDevice? = nil,

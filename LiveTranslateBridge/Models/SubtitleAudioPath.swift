@@ -19,6 +19,9 @@ extension SubtitleModel {
         private var client: TranslationClient?
         private var resampler: Resampler?
         private var sourceFormat: AVAudioFormat?
+        /// Converted PCM not yet long enough to make a chunk.
+        private var staged = Data()
+        private var gate: SilenceGate?
         private let queue: RealtimeAudioQueue
         private let callback: Callback
 
@@ -28,6 +31,7 @@ extension SubtitleModel {
 
         init(direction: Direction) {
             self.direction = direction
+            gate = Self.makeGate(direction: direction, gatesMicrophone: false)
             let callback = Callback()
             self.callback = callback
             queue = RealtimeAudioQueue(
@@ -42,16 +46,42 @@ extension SubtitleModel {
             callback.owner = self
         }
 
-        func install(client: TranslationClient?) {
+        /// `gatesMicrophone` also stops the microphone's upload through long
+        /// silences. The far end is always gated, but only on exact digital
+        /// silence, which cannot cost a word.
+        func install(client: TranslationClient?, gatesMicrophone: Bool = false) {
             queue.invalidate()
             queue.perform { [weak self] in
                 guard let self else { return }
                 self.client = client
+                self.staged.removeAll(keepingCapacity: true)
+                self.gate = Self.makeGate(
+                    direction: self.direction, gatesMicrophone: gatesMicrophone
+                )
                 if client == nil { self.resampler = nil; self.sourceFormat = nil }
             }
         }
 
+        private static func makeGate(direction: Direction, gatesMicrophone: Bool) -> SilenceGate? {
+            switch direction {
+            case .remote: return .digitalSilence()
+            case .local: return gatesMicrophone ? .microphone() : nil
+            }
+        }
+
         func enqueue(_ buffer: CapturedAudio) { queue.enqueue(buffer) }
+
+        #if DEBUG
+        /// Feeds a buffer through the same ring the IO thread publishes to.
+        func enqueueForTesting(_ buffer: AVAudioPCMBuffer) { queue.enqueue(buffer) }
+
+        /// Returns once everything enqueued so far has been processed.
+        func drainForTesting() {
+            let done = DispatchSemaphore(value: 0)
+            queue.perform { done.signal() }
+            done.wait()
+        }
+        #endif
 
         private func process(_ buffer: AVAudioPCMBuffer) {
             if resampler == nil || sourceFormat != buffer.format {
@@ -68,38 +98,41 @@ extension SubtitleModel {
                 report(dropped: "conversion produced no bytes")
                 return
             }
-            send(pcm, to: client)
             report(sent: pcm)
+            stage(pcm, to: client)
         }
 
-        /// Hands the converted PCM to the socket in chunks no longer than
-        /// `Self.chunkBytes`.
+        /// Regroups the converted PCM into `Self.chunkBytes` chunks and passes
+        /// each through the silence gate.
         ///
-        /// Both capture sides now deliver IO-sized buffers (~10 ms), so this
-        /// only splits the rare oversized block — a device configured with a
-        /// large IO buffer. Anything shorter than the chunk is sent as it
-        /// came, so the common path adds no copy at all.
-        private func send(_ pcm: Data, to client: TranslationClient) {
-            guard pcm.count > Self.chunkBytes else {
-                client.sendAudio(pcm)
-                return
-            }
-            var start = pcm.startIndex
-            while start < pcm.endIndex {
-                let end = pcm.index(
-                    start, offsetBy: Self.chunkBytes, limitedBy: pcm.endIndex
-                ) ?? pcm.endIndex
+        /// Both capture sides deliver IO-sized buffers (~10 ms). Sent as they
+        /// came, that was ~94 JSON + Base64 frames a second per direction,
+        /// each with its own completion hop; four of them to a frame is a
+        /// quarter of the frames for at most 30 ms of added wait.
+        private func stage(_ pcm: Data, to client: TranslationClient) {
+            staged.append(pcm)
+            while staged.count >= Self.chunkBytes {
                 // A standalone `Data`, not a slice: a chunk held back behind
                 // the handshake or across a reconnect would otherwise keep
-                // the whole source buffer alive for as long as it is queued.
-                client.sendAudio(Data(pcm[start..<end]))
-                start = end
+                // the staging buffer alive for as long as it is queued.
+                let chunk = Data(staged.prefix(Self.chunkBytes))
+                staged.removeFirst(Self.chunkBytes)
+                guard gate != nil else {
+                    client.sendAudio(chunk)
+                    continue
+                }
+                let wasOpen = gate!.isOpen
+                let released = gate!.admit(chunk)
+                if wasOpen != gate!.isOpen {
+                    BridgeLog.audio.notice(
+                        "[\(self.direction.rawValue, privacy: .public)] upload \(wasOpen ? "paused after sustained silence" : "resumed with \(released.count - 1) pre-roll chunks", privacy: .public)"
+                    )
+                }
+                for part in released { client.sendAudio(part) }
             }
         }
 
-        /// 40 ms of 16 kHz mono Int16 — the long end of the range the service
-        /// recommends per append, so the split stays coarse enough not to
-        /// multiply frames while still bounding how stale the tail can be.
+        /// 40 ms of 16 kHz mono Int16 per append.
         private static let chunkBytes = Int(Resampler.targetSampleRate)
             / 25 * MemoryLayout<Int16>.size
 

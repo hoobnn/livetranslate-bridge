@@ -4,31 +4,37 @@ import CoreAudio
 /// Float32 audio borrowed from a realtime capture callback. The pointers are
 /// valid only for the duration of that callback, so consumers copy before
 /// returning and never retain the value.
+///
+/// The list is taken as Core Audio hands it over: one buffer per stream, each
+/// interleaving its own `mNumberChannels`. A single interleaved stream and one
+/// buffer per channel are the two common shapes; an aggregate device's input
+/// is neither — several streams, each with several channels — and is read the
+/// same way.
 nonisolated public struct CapturedAudio: @unchecked Sendable {
     public let buffers: UnsafePointer<AudioBufferList>
     public let frameCount: Int
+    /// Channels across every buffer, in buffer order.
     public let channelCount: Int
     public let sampleRate: Double
-    public let interleaved: Bool
 
-    /// Validates the list against the declared layout so a device that changes
-    /// shape mid-stream is dropped rather than read out of bounds.
-    init?(buffers: UnsafePointer<AudioBufferList>, channelCount: Int,
-          sampleRate: Double, interleaved: Bool) {
+    /// Validates every buffer against a common frame count, so a device that
+    /// changes shape mid-stream is dropped rather than read out of bounds.
+    /// `expectedChannels`, when given, must match the list's total.
+    init?(buffers: UnsafePointer<AudioBufferList>, sampleRate: Double,
+          expectedChannels: Int? = nil) {
         let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffers))
-        guard channelCount > 0, sampleRate > 0,
-              list.count == (interleaved ? 1 : channelCount),
-              let first = list.first, first.mData != nil else { return nil }
-        let samplesPerFrame = interleaved ? channelCount : 1
-        let frames = Int(first.mDataByteSize) / MemoryLayout<Float>.size / samplesPerFrame
-        guard frames > 0, list.allSatisfy({
-            $0.mData != nil && Int($0.mDataByteSize) >= frames * samplesPerFrame * MemoryLayout<Float>.size
-        }) else { return nil }
+        guard sampleRate > 0, let first = list.first, first.mNumberChannels > 0,
+              list.allSatisfy({ $0.mData != nil && $0.mNumberChannels > 0 }) else { return nil }
+        let frames = Int(first.mDataByteSize) / MemoryLayout<Float>.size / Int(first.mNumberChannels)
+        let channels = list.reduce(0) { $0 + Int($1.mNumberChannels) }
+        guard frames > 0, expectedChannels.map({ $0 == channels }) ?? true,
+              list.allSatisfy({
+                  Int($0.mDataByteSize) >= frames * Int($0.mNumberChannels) * MemoryLayout<Float>.size
+              }) else { return nil }
         self.buffers = buffers
         self.frameCount = frames
-        self.channelCount = channelCount
+        self.channelCount = channels
         self.sampleRate = sampleRate
-        self.interleaved = interleaved
     }
 
     /// Absolute peak over every channel. Allocation-free, safe on the IO thread.
@@ -38,7 +44,8 @@ nonisolated public struct CapturedAudio: @unchecked Sendable {
         for buffer in list {
             guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
             var value: Float = 0
-            vDSP_maxmgv(data, 1, &value, vDSP_Length(Int(buffer.mDataByteSize) / MemoryLayout<Float>.size))
+            let samples = frameCount * Int(buffer.mNumberChannels)
+            vDSP_maxmgv(data, 1, &value, vDSP_Length(samples))
             loudest = max(loudest, value)
         }
         return loudest

@@ -121,8 +121,8 @@ nonisolated public final class DownlinkTap: @unchecked Sendable {
             &procID, newAggregate, nil
         ) { _, inputData, _, _, _ in
             guard let handler, let buffer = CapturedAudio(
-                buffers: inputData, channelCount: channels,
-                sampleRate: sampleRate, interleaved: interleaved
+                buffers: inputData, sampleRate: sampleRate,
+                expectedChannels: channels
             ) else { return }
             handler(buffer)
         }

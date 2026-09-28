@@ -20,12 +20,23 @@ nonisolated public struct AudioOutputDevice: Identifiable, Hashable, Sendable {
     /// what is written to it back as a recordable input.
     public let hasInputStreams: Bool
 
+    /// Sub-devices when this is an aggregate or multi-output device.
+    public var members: [AudioDeviceMember] = []
+
     public var isLoopbackCandidate: Bool { hasInputStreams && isKnownLoopback }
 
-    /// Duplex hardware is not necessarily a virtual loopback device.
+    /// Duplex hardware is not necessarily a virtual loopback device. A
+    /// multi-output device that includes one still reaches it.
     public var isKnownLoopback: Bool {
-        let label = (name + " " + (uid ?? "")).lowercased()
-        return ["blackhole", "loopback", "soundflower"].contains { label.contains($0) }
+        AudioDeviceMember.isLoopbackLabel(name + " " + (uid ?? ""))
+            || members.contains(where: \.isKnownLoopback)
+    }
+
+    /// Every device UID that audio played here actually reaches.
+    public var routeUIDs: Set<String> {
+        var uids = Set(members.map(\.uid))
+        if let uid { uids.insert(uid) }
+        return uids
     }
 
     /// Every device that can play audio, in the order Core Audio lists them.
@@ -43,7 +54,8 @@ nonisolated public struct AudioOutputDevice: Identifiable, Hashable, Sendable {
                 uid: AudioObject.string(device, kAudioDevicePropertyDeviceUID),
                 hasInputStreams: streamCount(
                     device, scope: kAudioObjectPropertyScopeInput
-                ) > 0
+                ) > 0,
+                members: AudioObject.aggregateMembers(device)
             )
         }
     }

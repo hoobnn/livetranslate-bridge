@@ -1,5 +1,7 @@
 import os
+import AppKit
 import Foundation
+import Network
 
 /// Streams 16 kHz PCM to Alibaba Model Studio's live translation model and
 /// reports transcript and translation as they arrive.
@@ -31,54 +33,6 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         /// Whose voice the synthesised translation speaks in. Only has an
         /// effect when `wantsAudio` is on, since it is the audio it shapes.
         public var voice: Voice
-        /// qwen3.5 VAD controls. qwen3.8 uses its independent speaker detection
-        /// schema and does not consume this legacy pause window.
-        public var segmentation: Segmentation
-
-        /// When the service closes an utterance and starts translating it.
-        ///
-        /// Server VAD closes a turn after the configured silence window.
-        /// Streaming output may arrive before then. A short window can split
-        /// ordinary breathing pauses and remove context from each translation.
-        public struct Segmentation: Sendable, Equatable {
-            /// The silence that ends an utterance. The service accepts
-            /// 200–6000 ms.
-            public var silenceDuration: Int
-            /// Service-side VAD sensitivity. This is not the per-second PCM
-            /// peak shown in diagnostics and must not be converted to dBFS.
-            public var threshold: Double
-
-            /// The service's own defaults, sent explicitly so the wire config
-            /// says what the session actually runs on.
-            public static let serviceDefault = Segmentation(
-                silenceDuration: 1_000, threshold: 0.2
-            )
-
-            /// Explicit low-latency option. Natural breathing and hesitation can
-            /// exceed this; it does not guarantee a semantically complete sentence.
-            public static let responsive = Segmentation(
-                silenceDuration: 400, threshold: 0.2
-            )
-
-            /// Longer pauses in narrated lessons and long-form speech.
-            public static let listening = Segmentation(
-                silenceDuration: 1_500, threshold: 0.2
-            )
-
-            public init(silenceDuration: Int, threshold: Double) {
-                self.silenceDuration = min(max(silenceDuration, 200), 6_000)
-                self.threshold = min(max(threshold, -1), 1)
-            }
-
-            var payload: [String: Any] {
-                [
-                    "type": "server_vad",
-                    "threshold": threshold,
-                    "silence_duration_ms": silenceDuration,
-                ]
-            }
-        }
-
         /// The service can speak the translation in the speaker's own voice
         /// rather than a stock one.
         ///
@@ -132,10 +86,8 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             sourceLanguage: String? = nil,
             wantsAudio: Bool = false,
             phrases: [String: String] = [:],
-            voice: Voice = .preset,
-            segmentation: Segmentation = .serviceDefault
+            voice: Voice = .preset
         ) {
-            self.segmentation = segmentation
             self.apiKey = apiKey
             self.workspaceID = workspaceID
             self.region = region
@@ -190,6 +142,11 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     }
 
     public static let model = "qwen3.8-livetranslate-flash-realtime"
+
+    /// Read once: `ProcessInfo.environment` builds a fresh dictionary on
+    /// every access, and this is checked for every inbound frame.
+    private static let tracesFrames =
+        ProcessInfo.processInfo.environment["CALLAUDIO_DEBUG"] != nil
 
     public struct EventIdentity: Sendable, Hashable {
         public var streamID: String
@@ -249,7 +206,11 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     private var eventIDOrder: [String] = []
     private var config: Config
     private var task: URLSessionWebSocketTask?
-    private var session: URLSession?
+    /// One session for every socket this client opens. A reopen only needs a
+    /// new task; a new session per socket leaked the old one (and its
+    /// delegate queue) on every reconnect, since nothing invalidated it, and
+    /// gave up TLS session resumption on the handshake that most needs it.
+    private let urlSession: URLSession
     private let lock = NSLock()
     private var isOpen = false
     private var sawSessionUpdated = false
@@ -297,8 +258,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     private var lastInboundAt = Date()
 
     /// Audio handed over while the socket was down, replayed once the new one
-    /// is configured. One second is enough to cover a reopen without letting
-    /// a long outage push stale speech into the call.
+    /// is configured. Two seconds cover a reopen — measured at about 0.3 s
+    /// from `resume()` to `session.updated`, plus the first 0.25 s backoff —
+    /// with room for a slow network and for the silence gate's pre-roll,
+    /// without letting a long outage push stale speech into the call.
     private var reconnectBuffer: [Data] = []
     private var reconnectBufferedBytes = 0
 
@@ -324,7 +287,38 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// At 16 kHz mono Int16 one second is 32000 bytes. Bounds the replay
     /// buffer by duration rather than by chunk count, which varies with the
     /// capture device's buffer size.
-    private static let reconnectBufferBytes = 32_000
+    private static let reconnectBufferBytes = 64_000
+
+    /// How often a WebSocket ping is sent. The service answers pongs (58 ms
+    /// measured), and unlike inbound events they do not depend on anyone
+    /// speaking, so they detect a dead connection long before the 40 s
+    /// inbound timeout that has to sit above the service's own quiet spells.
+    private static let pingInterval: TimeInterval = 5
+
+    /// A ping still unanswered after this long means the connection is gone.
+    /// Two ping intervals, so a single slow round trip on a congested link
+    /// does not cost a reconnect.
+    private static let pongTimeout: TimeInterval = 9
+
+    /// With no audio handed over for this long, a dropped socket is left
+    /// closed rather than reopened. Nothing is waiting on it — the silence
+    /// gate has stopped the upload — so a reconnect ladder running through a
+    /// quiet stretch or an outage would only spend handshakes. The next audio
+    /// reopens it at once, and the reconnect buffer carries that audio
+    /// across the handshake.
+    private static let dormantAfter: TimeInterval = 10
+
+    private var lastPingAt = Date.distantPast
+    private var pingOutstandingSince: Date?
+    private var lastAudioAt = Date()
+    /// Set while the socket is deliberately left closed for want of audio.
+    private var isDormant = false
+    /// When the current reopen began, for the recovery-time log line.
+    private var reconnectStartedAt: Date?
+    private var pathMonitor: NWPathMonitor?
+    /// The interfaces the last satisfied path ran over, or nil while offline.
+    private var pathSignature: String??
+    private var wakeObserver: NSObjectProtocol?
 
     /// WebSocketTask accepts concurrent sends, but unconstrained sends turn a
     /// brief network stall into hundreds of live completion handlers. A
@@ -349,7 +343,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// chunks to cut latency would have quietly shortened the network
     /// tolerance too. One second at 16 kHz mono Int16 is the same second
     /// either way.
-    private static let outboundAudioBudget = 32_000
+    ///
+    /// Matches the reconnect buffer, so the replay that follows a reopen is
+    /// never trimmed by the pump it is replayed through.
+    private static let outboundAudioBudget = reconnectBufferBytes
     private let outboundQueue = DispatchQueue(label: "call-audio-bridge.outbound")
     private var outboundMessages: [OutboundMessage] = []
     private var outboundHead = 0
@@ -481,6 +478,18 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     public init(config: Config, diagnosticLabel: String = "unspecified") {
         self.diagnosticLabel = diagnosticLabel
         self.config = config
+        let callbackQueue = OperationQueue()
+        callbackQueue.name = "call-audio-bridge.websocket"
+        callbackQueue.maxConcurrentOperationCount = 1
+        let configuration = URLSessionConfiguration.default
+        // Interactive traffic: asks Wi-Fi for the low-latency access category
+        // rather than best effort. A hint, not a guarantee.
+        configuration.networkServiceType = .responsiveData
+        // Fail fast so the reconnect ladder, not the session, owns retrying.
+        configuration.waitsForConnectivity = false
+        urlSession = URLSession(
+            configuration: configuration, delegate: nil, delegateQueue: callbackQueue
+        )
         super.init()
     }
 
@@ -489,9 +498,11 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     public func connect() {
         lock.lock()
         guard task == nil, !isRetired else { lock.unlock(); return }
+        lastAudioAt = Date()
         openLocked()
         lock.unlock()
         startSweepTimer()
+        startNetworkWatch()
     }
 
     /// Builds and resumes the socket. The caller holds `lock`, because a
@@ -503,14 +514,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 30
 
-        let callbackQueue = OperationQueue()
-        callbackQueue.name = "call-audio-bridge.websocket"
-        callbackQueue.maxConcurrentOperationCount = 1
-        let session = URLSession(
-            configuration: .default, delegate: nil, delegateQueue: callbackQueue
-        )
-        let task = session.webSocketTask(with: request)
-        self.session = session
+        let task = urlSession.webSocketTask(with: request)
         self.task = task
         // A fresh socket starts from a clean slate in every respect that
         // decides whether audio flows: nothing is configured yet, nothing has
@@ -520,7 +524,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         isDead = false
         isClosing = false
         sawSessionUpdated = false
+        isDormant = false
         lastInboundAt = Date()
+        lastPingAt = Date()
+        pingOutstandingSince = nil
         generation &+= 1
         let opened = generation
 
@@ -552,18 +559,44 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     /// still convert, and `sendAudio` still accepts them. The result is a
     /// session that has silently stopped subtitling while claiming to run.
     /// Reopening is what makes a pause in the conversation survivable.
-    private func scheduleReconnect(reason: String) {
+    private func scheduleReconnect(reason: String, immediately: Bool = false) {
         lock.lock()
         guard !isRetired, !isReconnecting else { lock.unlock(); return }
+        // Nothing has been handed over for a while: the upload is gated off,
+        // so a new socket would sit idle until the service closes it again.
+        // Stay closed and let the next audio reopen it.
+        if !immediately, Date().timeIntervalSince(lastAudioAt) >= Self.dormantAfter {
+            let stale = task
+            task = nil
+            isDead = true
+            isOpen = false
+            sawSessionUpdated = false
+            let wasDormant = isDormant
+            isDormant = true
+            reconnectAttempts = 0
+            reconnectStartedAt = nil
+            generation &+= 1
+            lock.unlock()
+            stale?.cancel(with: .goingAway, reason: nil)
+            if !wasDormant {
+                BridgeLog.socket.notice(
+                    "[\(self.diagnosticLabel, privacy: .public)] no audio for \(Int(Self.dormantAfter))s; leaving the socket closed until speech resumes (\(reason, privacy: .public))"
+                )
+            }
+            return
+        }
         isReconnecting = true
+        isDormant = false
         reconnectAttempts += 1
         let attempt = reconnectAttempts
+        if reconnectStartedAt == nil { reconnectStartedAt = Date() }
         lock.unlock()
 
         // Exponential, capped: the first retry is immediate enough to be
         // invisible in conversation, and a service that is genuinely down is
-        // not hammered.
-        let delay = min(
+        // not hammered. Waking from dormancy skips the wait: speech is
+        // already queueing behind the handshake.
+        let delay = immediately ? 0 : min(
             Self.maximumReconnectDelay,
             pow(2, Double(attempt - 1)) * 0.25
         )
@@ -583,7 +616,6 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             // `receive` would otherwise keep a second stream alive.
             let stale = self.task
             self.task = nil
-            self.session = nil
             self.openLocked()
             self.isReconnecting = false
             self.lock.unlock()
@@ -612,15 +644,107 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         // `isClosing` covers the `finish()` window, where the caller is
         // winding the session down but has not retired it yet. Reopening
         // there would race a new socket against the drain.
-        let shouldSweep = !isRetired && !isClosing && !isReconnecting
-            && (stranded || idle >= Self.inboundTimeout)
+        let active = !isRetired && !isClosing && !isReconnecting && !isDormant
+        // Inbound silence only means something while audio is going out: with
+        // the upload gated off the service has nothing to answer, and a
+        // measured two-minute gap left the session healthy — it answered
+        // every ping and translated the next audio sent. The ping below
+        // covers liveness in that stretch.
+        let expectsInbound = Date().timeIntervalSince(lastAudioAt) < Self.dormantAfter
+        let shouldSweep = active
+            && (stranded || (expectsInbound && idle >= Self.inboundTimeout))
+        // A ping unanswered past the timeout is a connection that died
+        // without saying so — Wi-Fi handoff, sleep, a NAT that forgot us.
+        let now = Date()
+        let pongOverdue = active && !stranded
+            && pingOutstandingSince.map { now.timeIntervalSince($0) >= Self.pongTimeout } == true
+        let pingTask = active && !stranded && pingOutstandingSince == nil
+            && now.timeIntervalSince(lastPingAt) >= Self.pingInterval ? task : nil
+        let pingGeneration = generation
+        if pingTask != nil {
+            lastPingAt = now
+            pingOutstandingSince = now
+        }
         lock.unlock()
-        guard shouldSweep else { return }
-        scheduleReconnect(
-            reason: stranded
-                ? "socket went away without reopening"
-                : "no inbound frame for \(Int(idle))s"
+        if shouldSweep {
+            scheduleReconnect(
+                reason: stranded
+                    ? "socket went away without reopening"
+                    : "no inbound frame for \(Int(idle))s"
+            )
+            return
+        }
+        if pongOverdue {
+            BridgeLog.socket.error(
+                "[\(self.diagnosticLabel, privacy: .public)] no pong for \(Int(Self.pongTimeout))s"
+            )
+            markDead(reason: "no pong for \(Int(Self.pongTimeout))s")
+            return
+        }
+        pingTask?.sendPing { [weak self] error in
+            guard let self, self.isCurrent(pingGeneration) else { return }
+            if let error {
+                guard !self.isClosingNow else { return }
+                self.markDead(reason: "ping failed: \(error.localizedDescription)")
+                return
+            }
+            self.lock.lock()
+            self.pingOutstandingSince = nil
+            self.lock.unlock()
+        }
+    }
+
+    /// Reopens at once when the route to the service changes or the Mac
+    /// wakes, rather than waiting for a ping to time out on a socket bound to
+    /// an interface that no longer exists.
+    private func startNetworkWatch() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            // Only the primary interface: the full list also carries awdl0
+            // (AirDrop, Handoff) and utun* (VPN, Private Relay), which come
+            // and go without the route to the service changing.
+            let signature: String? = path.status == .satisfied
+                ? path.availableInterfaces.first?.name ?? "unknown"
+                : nil
+            self.lock.lock()
+            let previous = self.pathSignature
+            self.pathSignature = signature
+            self.lock.unlock()
+            // The first report is the path we connected over; offline is
+            // left to the ping, which will fail on its own.
+            guard let previous, let signature, previous != signature else { return }
+            self.reopen(reason: "network path changed (\(previous ?? "offline") → \(signature))")
+        }
+        let wake = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.sweepQueue.async { self?.reopen(reason: "system woke from sleep") }
+        }
+        lock.lock()
+        guard !isRetired, pathMonitor == nil else {
+            lock.unlock()
+            NSWorkspace.shared.notificationCenter.removeObserver(wake)
+            return
+        }
+        pathMonitor = monitor
+        wakeObserver = wake
+        lock.unlock()
+        monitor.start(queue: sweepQueue)
+    }
+
+    /// A reopen for a known cause rather than a failure: the backoff starts
+    /// over, and a dormant socket stays dormant.
+    private func reopen(reason: String) {
+        lock.lock()
+        let skip = isRetired || isClosing || isDormant || task == nil
+        if !skip { reconnectAttempts = 0 }
+        lock.unlock()
+        guard !skip else { return }
+        BridgeLog.socket.notice(
+            "[\(self.diagnosticLabel, privacy: .public)] reopening: \(reason, privacy: .public)"
         )
+        markDead(reason: reason)
     }
 
     /// Decides what a service `error` frame means for the session.
@@ -728,8 +852,11 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         lock.lock()
         let task = self.task
         let timer = sweepTimer
+        let monitor = pathMonitor
+        let wake = wakeObserver
+        pathMonitor = nil
+        wakeObserver = nil
         self.task = nil
-        self.session = nil
         sweepTimer = nil
         isOpen = false
         isDead = true
@@ -749,7 +876,10 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             self?.outboundHead = 0
         }
         timer?.cancel()
+        monitor?.cancel()
+        if let wake { NSWorkspace.shared.notificationCenter.removeObserver(wake) }
         task?.cancel(with: .goingAway, reason: nil)
+        urlSession.invalidateAndCancel()
     }
 
     private var isRunningNow: Bool {
@@ -808,6 +938,21 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         // capture outliving the session by a buffer or two rather than a
         // fault worth reporting.
         guard !isRetired else { lock.unlock(); return }
+        lastAudioAt = Date()
+
+        // Dormant: the socket was left closed while nothing was sent. Hold
+        // this audio like any reconnect gap and reopen without backoff.
+        if isDormant {
+            isDormant = false
+            reconnectBuffer.append(pcm)
+            reconnectBufferedBytes += pcm.count
+            lock.unlock()
+            BridgeLog.socket.notice(
+                "[\(self.diagnosticLabel, privacy: .public)] audio resumed; reopening dormant socket"
+            )
+            scheduleReconnect(reason: "audio resumed", immediately: true)
+            return
+        }
 
         // Mid-reconnect. Keep the most recent second and let the rest go:
         // what matters is not losing the words spoken across the gap, and
@@ -861,11 +1006,15 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
 
     private var lastQueueFullLog = Date.distantPast
 
+    /// Built by hand: Base64 needs no JSON escaping, and this runs 25 times a
+    /// second per direction, where a `JSONSerialization` round trip through a
+    /// dictionary was most of the cost of each frame.
     private func appendAudio(_ pcm: Data) {
-        send([
-            "type": "input_audio_buffer.append",
-            "audio": pcm.base64EncodedString(),
-        ], audioBytes: pcm.count)
+        enqueueOutbound(
+            text: #"{"type":"input_audio_buffer.append","audio":""#
+                + pcm.base64EncodedString() + #""}"#,
+            audioBytes: pcm.count
+        )
     }
 
     private func flushPendingAudio() {
@@ -877,14 +1026,18 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         for chunk in queued { appendAudio(chunk) }
     }
 
-    private func send(_ payload: [String: Any], audioBytes: Int = 0) {
+    private func send(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        enqueueOutbound(text: text, audioBytes: 0)
+    }
+
+    private func enqueueOutbound(text: String, audioBytes: Int) {
         lock.lock()
         let task = self.task
         let generation = self.generation
         lock.unlock()
-        guard let task,
-              let data = try? JSONSerialization.data(withJSONObject: payload),
-              let text = String(data: data, encoding: .utf8) else { return }
+        guard let task else { return }
         let message = OutboundMessage(
             text: text, task: task, generation: generation,
             audioBytes: audioBytes
@@ -1001,7 +1154,7 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
         #if DEBUG
         onRawFrameForTesting?(text)
         #endif
-        if ProcessInfo.processInfo.environment["CALLAUDIO_DEBUG"] != nil {
+        if Self.tracesFrames {
             // stderr is invisible in a GUI app, so mirror it to the log where
             // a running session can actually be read.
             let frame = String(text.prefix(600))
@@ -1125,6 +1278,8 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             // this one — retries promptly again.
             let wasReconnect = reconnectAttempts > 0
             reconnectAttempts = 0
+            let recovery = reconnectStartedAt.map { Date().timeIntervalSince($0) }
+            reconnectStartedAt = nil
             // Audio held across the gap goes in front of whatever queued
             // behind the handshake, so the utterance stays in order.
             let carried = reconnectBuffer
@@ -1141,6 +1296,11 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
             BridgeLog.socket.notice(
                 "session.updated; flushing \(queued, privacy: .public) queued buffers\(wasReconnect ? " (after reconnect, \(carried.count) carried)" : "", privacy: .public)"
             )
+            if let recovery {
+                BridgeLog.socket.notice(
+                    "[\(self.diagnosticLabel, privacy: .public)] recovered in \(String(format: "%.2f", recovery), privacy: .public)s"
+                )
+            }
             emit(.sessionReady)
             resumeReady(true)
             flushPendingAudio()
@@ -1243,7 +1403,6 @@ nonisolated public final class TranslationClient: NSObject, @unchecked Sendable 
     func simulateDropForTesting() {
         lock.lock()
         task = nil
-        session = nil
         isOpen = false
         isDead = true
         sawSessionUpdated = false

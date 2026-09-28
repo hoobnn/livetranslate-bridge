@@ -35,14 +35,12 @@ nonisolated struct AudioRouteSnapshot: Equatable, Sendable {
     private static func endpoint(_ id: AudioDeviceID?, input: Bool) -> Endpoint? {
         guard let id else { return nil }
         let scope = input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput
-        var format = AudioStreamBasicDescription()
-        var address = AudioObject.address(kAudioDevicePropertyStreamFormat, scope: scope)
-        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        _ = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &format)
+        // Every stream, not the first: a member joining or leaving an
+        // aggregate changes the stream list and leaves stream one as it was.
         return Endpoint(id: id,
             sampleRate: AudioObject.value(id, kAudioDevicePropertyNominalSampleRate, default: 0.0),
             alive: AudioObject.value(id, kAudioDevicePropertyDeviceIsAlive, default: UInt32(0)),
-            channels: format.mChannelsPerFrame)
+            channels: UInt32(AudioObject.channelCount(id, scope: scope)))
     }
 }
 
@@ -170,8 +168,12 @@ nonisolated enum AudioRoutePolicy {
     static func missingExplicitInput(uid: String, resolved: AudioInputDevice?) -> Bool {
         !uid.isEmpty && resolved == nil
     }
-    static func feedsOwnOutput(inputUID: String?, inputIsLoopback: Bool, localUID: String, remoteUID: String?) -> Bool {
-        guard inputIsLoopback, let inputUID, !inputUID.isEmpty else { return false }
-        return (!localUID.isEmpty && inputUID == localUID) || inputUID == remoteUID
+    /// Whether the input would read back what the app plays: a loopback
+    /// (itself, or a member of an aggregate) that is also one of the outputs
+    /// (itself, or a member of a multi-output device).
+    static func feedsOwnOutput(input: AudioInputDevice?, outputs: [AudioOutputDevice?]) -> Bool {
+        guard let input else { return false }
+        let played = outputs.compactMap { $0 }.reduce(into: Set<String>()) { $0.formUnion($1.routeUIDs) }
+        return !input.loopbackUIDs.isDisjoint(with: played)
     }
 }

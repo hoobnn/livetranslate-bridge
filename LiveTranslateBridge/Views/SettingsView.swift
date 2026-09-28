@@ -212,6 +212,32 @@ private struct TranslationSettings: View {
             .disabled(model.isRunning)
 
             SegmentationSettings(model: model)
+
+            Section {
+                TextEditor(text: $model.glossaryText)
+                    .font(.App.body.monospaced())
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 88)
+                    .accessibilityLabel(t("settings.glossary.section"))
+            } header: {
+                Text(t("settings.glossary.section"))
+            } footer: {
+                Text(t("settings.glossary.footer"))
+                    .font(.App.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(model.isRunning)
+
+            Section {
+                Toggle(t("settings.upload.microphoneGate"), isOn: $model.gatesMicrophoneSilence)
+            } header: {
+                Text(t("settings.upload.section"))
+            } footer: {
+                Text(t("settings.upload.footer"))
+                    .font(.App.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(model.isRunning)
         }
         .formStyle(.grouped)
     }

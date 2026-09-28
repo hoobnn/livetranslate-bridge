@@ -453,6 +453,7 @@ final class SubtitleModel {
             Defaults.remoteTranslationVolume = gain
             gains.remoteTranslation = gain
             applyRemoteVolumes()
+            requestSpeechIfUnmuted(.remote, gain: gain)
         }
     }
 
@@ -471,6 +472,7 @@ final class SubtitleModel {
             Defaults.localTranslationVolume = gain
             gains.localTranslation = gain
             applyLocalVolumes()
+            requestSpeechIfUnmuted(.local, gain: gain)
         }
     }
 
@@ -500,6 +502,39 @@ final class SubtitleModel {
             original: Float(gains.localOriginal),
             translation: Float(gains.localTranslation)
         )
+    }
+
+    /// Sides whose route could play translated speech but whose translation
+    /// volume was zero at start, so the socket was opened text-only.
+    ///
+    /// Synthesised speech is the most expensive thing the service returns,
+    /// and at zero volume nobody hears it. The catch is that the service
+    /// rejects a second `session.update` once a session is under way
+    /// (measured: "session already started"), so turning the volume back up
+    /// has to reopen the session to ask for audio again.
+    @ObservationIgnored private var textOnlyLanes: Set<Direction> = []
+    @ObservationIgnored private var speechRequestTask: Task<Void, Never>?
+
+    private func requestSpeechIfUnmuted(_ direction: Direction, gain: Double) {
+        guard gain > 0, textOnlyLanes.contains(direction) else { return }
+        // Debounced: a slider dragged up from zero writes many values, and
+        // only the one it settles on should cost a reopen.
+        speechRequestTask?.cancel()
+        speechRequestTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            guard !Task.isCancelled, let self, self.isRunning,
+                  !self.textOnlyLanes.isDisjoint(with: self.unmutedLanes) else { return }
+            BridgeLog.audio.notice("translation volume raised from zero; reopening to request speech")
+            self.stop(preserveRouteWatcher: true)
+            self.start(preserveTranscript: true)
+        }
+    }
+
+    private var unmutedLanes: Set<Direction> {
+        var lanes: Set<Direction> = []
+        if gains.remoteTranslation > 0 { lanes.insert(.remote) }
+        if gains.localTranslation > 0 { lanes.insert(.local) }
+        return lanes
     }
 
     private static func clampedVolume(_ value: Double) -> Double {
@@ -679,49 +714,22 @@ final class SubtitleModel {
         didSet { Defaults.region = region }
     }
 
-    /// How long a pause has to run before the service calls the utterance
-    /// finished, in milliseconds.
-    ///
-    /// This is the app's largest single lever on how fast a line appears: the
-    /// wait is spent before translation even starts, so it is added to every
-    /// subtitle on top of the model's own latency. It is also the one with a
-    /// real cost — see `TranslationClient.Config.Segmentation`, which holds
-    /// the reasoning and the bounds.
-    ///
-    /// A session setting, not a live one: the window is fixed in the
-    /// `session.update` that opens the socket, so changing it mid-call would
-    /// show a number the running session is not using.
-    var silenceDurationMS = Defaults.segmentation.silenceDuration {
+    /// Term overrides, one "source = target" pair per line. A session
+    /// setting: the list is part of the `session.update` that opens each
+    /// socket, and the service rejects a second update once audio has begun.
+    var glossaryText = Defaults.glossary {
         didSet {
-            guard silenceDurationMS != oldValue else { return }
-            Defaults.segmentation = segmentation
+            guard glossaryText != oldValue else { return }
+            Defaults.glossary = glossaryText
         }
     }
 
-    /// How loud a frame must be to count as speech. See `Segmentation`.
-    var vadThreshold = Defaults.segmentation.threshold {
-        didSet {
-            guard vadThreshold != oldValue else { return }
-            Defaults.segmentation = segmentation
-        }
-    }
+    var glossary: [String: String] { Glossary.parse(glossaryText) }
 
-    /// The pair as the client takes it, clamped to what the service accepts.
-    var segmentation: TranslationClient.Config.Segmentation {
-        .init(silenceDuration: silenceDurationMS, threshold: vadThreshold)
-    }
-
-    /// Whether the two are already where a fresh install starts, so the
-    /// settings pane can say there is nothing to undo.
-    var usesDefaultSegmentation: Bool {
-        segmentation == .serviceDefault
-    }
-
-    func resetSegmentationToDefault() {
-        silenceDurationMS = TranslationClient.Config.Segmentation
-            .serviceDefault.silenceDuration
-        vadThreshold = TranslationClient.Config.Segmentation
-            .serviceDefault.threshold
+    /// Whether the microphone's upload pauses through long silences. See
+    /// `SilenceGate`; the far end is always gated on digital silence.
+    var gatesMicrophoneSilence = Defaults.gatesMicrophoneSilence {
+        didSet { Defaults.gatesMicrophoneSilence = gatesMicrophoneSilence }
     }
 
     /// Translating a language into itself would echo the speaker back at
@@ -886,12 +894,10 @@ final class SubtitleModel {
                 status = .failed(t("audio.inputMissing"))
                 return
             }
-            let actualInput = inputDevice
-            let actualRemote = remoteOutputDevice
-            guard !AudioRoutePolicy.feedsOwnOutput(inputUID: actualInput?.uid,
-                inputIsLoopback: actualInput?.isKnownLoopback == true,
-                localUID: outputDeviceUID,
-                remoteUID: scope.captures(.remote) ? actualRemote?.uid : nil) else {
+            guard !AudioRoutePolicy.feedsOwnOutput(input: inputDevice, outputs: [
+                outputDeviceUID.isEmpty ? nil : localOutputDevice,
+                scope.captures(.remote) ? remoteOutputDevice : nil,
+            ]) else {
                 status = .failed(t("audio.feedbackRoute"))
                 return
             }
@@ -932,9 +938,16 @@ final class SubtitleModel {
         } else { localRouteReady = false }
         guard isRunning, sessionGeneration == generationAtStart, !Task.isCancelled else { return }
         startupTask = nil
+        textOnlyLanes = []
+        if translates, remoteRouteReady, gains.remoteTranslation == 0 {
+            textOnlyLanes.insert(.remote)
+        }
+        if translates, localRouteReady, gains.localTranslation == 0 {
+            textOnlyLanes.insert(.local)
+        }
 
         if scope.captures(.remote) {
-            let wantsAudio = translates && remoteRouteReady
+            let wantsAudio = translates && remoteRouteReady && gains.remoteTranslation > 0
             let downlink = makeClient(
                 direction: .remote,
                 credentials: credentials,
@@ -950,10 +963,11 @@ final class SubtitleModel {
 
         // The mirror image: we speak ours and are translated into theirs.
         // Audio is requested only when a device was chosen to play it into,
-        // never while transcribing — there is no translation to speak — and
-        // never when our own side is not captured in the first place.
+        // never while transcribing — there is no translation to speak — never
+        // when our own side is not captured in the first place, and not while
+        // its volume is zero (see `textOnlyLanes`).
         if scope.captures(.local) {
-            let wantsAudio = translates && localRouteReady
+            let wantsAudio = translates && localRouteReady && gains.localTranslation > 0
             let uplink = makeClient(
                 direction: .local,
                 credentials: credentials,
@@ -966,7 +980,7 @@ final class SubtitleModel {
                 voice: clonesVoice && wantsAudio ? .cloneOnce : .preset
             )
             clients[.local] = uplink
-            uplinkPath.install(client: uplink)
+            uplinkPath.install(client: uplink, gatesMicrophone: gatesMicrophoneSilence)
             uplink.connect()
         }
 
@@ -1189,8 +1203,8 @@ final class SubtitleModel {
             targetLanguage: targetLanguage,
             sourceLanguage: sourceLanguage,
             wantsAudio: wantsAudio,
-            voice: voice,
-            segmentation: segmentation
+            phrases: glossary,
+            voice: voice
         )
         let client = TranslationClient(config: config, diagnosticLabel: direction.rawValue)
         let generation = sessionGeneration

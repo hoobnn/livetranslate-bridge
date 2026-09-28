@@ -36,8 +36,8 @@ extension SubtitleModel {
         private static let remoteTranslationVolumeKey = "remoteTranslationVolume"
         private static let localOriginalVolumeKey = "localOriginalVolume"
         private static let localTranslationVolumeKey = "localTranslationVolume"
-        private static let silenceDurationKey = "segmentationSilenceMS"
-        private static let vadThresholdKey = "segmentationThreshold"
+        private static let glossaryKey = "translationGlossary"
+        private static let microphoneGateKey = "gatesMicrophoneSilence"
 
         /// The pair a fresh install starts from: we speak Chinese, the far end
         /// English. Stated here rather than as literals at each use, so "what
@@ -142,24 +142,18 @@ extension SubtitleModel {
             set { store.set(newValue, forKey: localTranslationVolumeKey) }
         }
 
-        /// How the service is asked to segment speech. Stored like the
-        /// language pair: whoever tuned it once for their own calls is
-        /// running the same kind of call next launch.
-        ///
-        /// Prefer sentence continuity by default; preserve explicit tuning.
-        static var segmentation: TranslationClient.Config.Segmentation {
-            get {
-                let fallback = TranslationClient.Config.Segmentation.serviceDefault
-                let silence = store.object(forKey: silenceDurationKey) as? Int
-                    ?? fallback.silenceDuration
-                let threshold = store.object(forKey: vadThresholdKey) as? Double
-                    ?? fallback.threshold
-                return .init(silenceDuration: silence, threshold: threshold)
-            }
-            set {
-                store.set(newValue.silenceDuration, forKey: silenceDurationKey)
-                store.set(newValue.threshold, forKey: vadThresholdKey)
-            }
+        /// One "source = target" pair per line; see `Glossary`.
+        static var glossary: String {
+            get { store.string(forKey: glossaryKey) ?? "" }
+            set { store.set(newValue, forKey: glossaryKey) }
+        }
+
+        /// Off by default: the far end is gated on exact digital silence,
+        /// which cannot cost a word, but a level gate on the microphone can
+        /// in principle miss a very quiet speaker.
+        static var gatesMicrophoneSilence: Bool {
+            get { store.bool(forKey: microphoneGateKey) }
+            set { store.set(newValue, forKey: microphoneGateKey) }
         }
 
         private static func storedVolume(_ key: String) -> Double {
