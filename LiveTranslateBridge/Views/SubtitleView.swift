@@ -115,6 +115,8 @@ struct SubtitleView: View {
             }
             .toolbar { if isActive { toolbarItems } }
             .focusedSceneValue(\.subtitleActions, isActive ? actions : nil)
+            .focusedSceneValue(\.exportSession, isActive && model.entryCount > 0
+                               ? ExportAction(key: "board", perform: exportBoard) : nil)
             .confirmationDialog(t("ux.clear.title"), isPresented: $confirmsClear,
                                 titleVisibility: .visible) {
                 Button(t("subtitles.clear"), role: .destructive) {
@@ -164,6 +166,11 @@ struct SubtitleView: View {
             showSetup: { isShowingSetup = true },
             showAudioRouting: { isShowingAudio = true }
         )
+    }
+
+    private func exportBoard() {
+        guard let record = model.boardRecord else { return }
+        ExportPanel.present(record)
     }
 
     private func copyAll() {
@@ -245,6 +252,13 @@ struct SubtitleView: View {
             // same button answering rather than a different one appearing.
             .contentTransition(.symbolEffect(.replace))
             .accessibilityIdentifier("transcript.copy")
+
+            Button(action: exportBoard) {
+                Label(t("export.menu"), systemImage: "square.and.arrow.up")
+            }
+            .disabled(model.entryCount == 0)
+            .help(t("export.help") + " (⇧⌘E)")
+            .accessibilityIdentifier("transcript.export")
 
             Button {
                 confirmsClear = true
@@ -513,7 +527,9 @@ private struct AudioRoutingButton: View {
 /// Both directions still share one timeline rather than getting a column each:
 /// a conversation is interleaved, and who answered whom is what is lost when
 /// the two sides scroll independently.
-private struct EntryCard: View {
+/// Also how the history pane sets a saved session, so a call reads the same
+/// afterwards as it did live.
+struct EntryCard: View {
     let entry: SubtitleModel.Entry
 
     /// Whether this card is expected to carry a translation under its

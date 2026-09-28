@@ -11,12 +11,12 @@ import SwiftUI
 ///
 /// One content plane, not four layers of chrome around one.
 ///
-/// The app has exactly two destinations and one of them is a debug panel, so
-/// a permanent sidebar spent a sixth of every window on a two-item list that
-/// never changes — and it put the session status, the window toolbar, the
-/// control bar and the log pane on four different edges of the same screen.
-/// The two destinations now live in the toolbar, where switching costs one
-/// click and nothing costs width.
+/// The app has a handful of destinations — the board, its history and a debug
+/// panel — so a permanent sidebar spent a sixth of every window on a short
+/// list that never changes, and it put the session status, the window toolbar,
+/// the control bar and the log pane on four different edges of the same
+/// screen. The destinations live in the toolbar instead, where switching costs
+/// one click and nothing costs width.
 struct ContentView: View {
     @Bindable var model: SubtitleModel
     @State private var pane: Pane = .subtitles
@@ -25,6 +25,7 @@ struct ContentView: View {
     /// Neither `Tab` nor `Section`: both name SwiftUI types used right below.
     enum Pane: String, Hashable, CaseIterable, Identifiable {
         case subtitles
+        case history
         case diagnostics
 
         var id: String { rawValue }
@@ -35,6 +36,7 @@ struct ContentView: View {
         var systemImage: String {
             switch self {
             case .subtitles: return "captions.bubble"
+            case .history: return "clock.arrow.circlepath"
             case .diagnostics: return "waveform.badge.magnifyingglass"
             }
         }
@@ -49,6 +51,10 @@ struct ContentView: View {
                 .opacity(pane == .subtitles ? 1 : 0)
                 .allowsHitTesting(pane == .subtitles)
                 .accessibilityHidden(pane != .subtitles)
+
+            if pane == .history {
+                HistoryView(model: model, history: model.history)
+            }
 
             if pane == .diagnostics {
                 DiagnosticsView(model: model)

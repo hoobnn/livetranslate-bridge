@@ -1,4 +1,5 @@
 import os
+import AppKit
 import AVFoundation
 import Foundation
 import Observation
@@ -315,6 +316,25 @@ final class SubtitleModel {
         @MainActor
         var message: String { t(rawValue) }
     }
+
+    /// Where finished boards are kept. See `persistBoard`.
+    let history: SessionHistory
+
+    /// A model built without a history directory keeps its sessions in memory
+    /// only, which is what tests and previews get: nothing they do may land
+    /// in the real app's history.
+    init(history: SessionHistory? = nil) {
+        self.history = history ?? SessionHistory(directory: nil)
+        // Quitting mid-call calls no `stop()`, so the last few seconds of the
+        // board would otherwise never reach the disk.
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.persistBoard(synchronously: true) }
+        }
+    }
+
+    @ObservationIgnored private var terminationObserver: (any NSObjectProtocol)?
 
     private(set) var entries: [Entry] = []
     private struct ArchivedEntry {
@@ -705,6 +725,16 @@ final class SubtitleModel {
         }
     }
 
+    /// Whether finished sessions are kept in the history. Turning it off stops
+    /// new saves and leaves what is already kept alone — deleting that is a
+    /// separate, explicit act.
+    var savesHistory = Defaults.savesHistory {
+        didSet {
+            guard savesHistory != oldValue else { return }
+            Defaults.savesHistory = savesHistory
+        }
+    }
+
     /// The scope the entries on the board were produced under. Pinned at
     /// `start()` alongside `runningMode`, and read by views for the same
     /// reason — the board outlives the session that filled it.
@@ -888,7 +918,10 @@ final class SubtitleModel {
         preserveTranscript: Bool = false
     ) async {
         guard isRunning else { return }
-        if !preserveTranscript { clearEntries() }
+        if !preserveTranscript {
+            clearEntries()
+            pinBoard()
+        }
         if scope.captures(.local) {
             guard !AudioRoutePolicy.missingExplicitInput(uid: inputDeviceUID, resolved: inputDevice) else {
                 status = .failed(t("audio.inputMissing"))
@@ -1091,11 +1124,20 @@ final class SubtitleModel {
         callState = .idle
         // `runningMode` deliberately survives: the entries it describes are
         // still on the board, and they are still what that mode produced.
+        boardEndedAt = .now
+        persistBoard()
     }
 
     /// Empties the board without touching the session, so a long call can be
     /// cleared down to the part worth reading.
+    ///
+    /// The board being cleared is saved first, and what arrives afterwards
+    /// goes into a session of its own: clearing is the user saying "from
+    /// here", and the part before it stays in the history as it was.
     func clearEntries() {
+        persistBoard()
+        liveSessionID = UUID()
+        boardEndedAt = nil
         serverEntries.removeAll(); serverAliases.removeAll()
         serverResponses.removeAll(); serverResponseStatus.removeAll()
         retiredServerItems.removeAll(); retiredServerOrder.removeAll()
@@ -1112,40 +1154,105 @@ final class SubtitleModel {
     /// it is a density choice, but pasted into notes the transcript has lost
     /// the running session that made "when" obvious.
     var transcriptText: String {
-        let archived = archivedEntries.map { entry in
-            transcriptBlock(
-                direction: entry.direction,
-                startedAt: entry.startedAt,
-                transcript: entry.transcript,
-                translation: entry.translation
-            )
-        }
-        let resident = entries.filter { !$0.isEmpty }.map { entry in
-            transcriptBlock(
-                direction: entry.direction,
-                startedAt: entry.startedAt,
-                transcript: entry.transcript,
-                translation: entry.translation
-            )
-        }
-        return (archived + resident)
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
+        SessionExport.plainTurns(boardTurns)
     }
 
-    private func transcriptBlock(
-        direction: Direction,
-        startedAt: Date,
-        transcript: String,
-        translation: String
-    ) -> String {
-        let time = startedAt.formatted(
-            .dateTime.hour(.twoDigits(amPM: .omitted)).minute().second()
+    /// Every turn the board holds, archived ones included, minus the blanks.
+    private var boardTurns: [SessionRecord.Turn] {
+        archivedEntries.map {
+            SessionRecord.Turn(direction: $0.direction, startedAt: $0.startedAt,
+                               transcript: $0.transcript, translation: $0.translation)
+        } + entries.filter { !$0.isEmpty }.map {
+            SessionRecord.Turn(direction: $0.direction, startedAt: $0.startedAt,
+                               transcript: $0.transcript, translation: $0.translation)
+        }
+    }
+
+    // MARK: - history
+
+    /// The setup a board was filled under, pinned when a fresh session starts.
+    ///
+    /// Separate from `runningMode` and `runningScope` because those are set at
+    /// the top of `start()`, before the previous board is cleared — and that
+    /// board has to be saved under the setup it was actually produced with.
+    private struct BoardSetup {
+        let mode: SessionMode
+        let scope: CaptureScope
+        let myLanguage: String
+        let theirLanguage: String
+    }
+
+    /// Nil until a real session has started: a board seeded for a preview or
+    /// fed by a test is never written to the history.
+    @ObservationIgnored private var boardSetup: BoardSetup?
+
+    /// The id the board is saved under. Kept across the internal restarts a
+    /// route change or a volume raised from zero cause — those reopen the
+    /// sockets but continue the same session — and replaced only when the
+    /// board is cleared.
+    private(set) var liveSessionID = UUID()
+
+    @ObservationIgnored private var boardEndedAt: Date?
+    @ObservationIgnored private var isHistoryDirty = false
+    @ObservationIgnored private var autosaveTask: Task<Void, Never>?
+
+    /// How long new text may sit unsaved. Long enough that a streaming call
+    /// costs one write per interval rather than one per word, short enough
+    /// that a crash loses a sentence rather than the call.
+    private static let autosaveDelay: Duration = .seconds(5)
+
+    private func pinBoard() {
+        boardSetup = BoardSetup(mode: mode, scope: scope,
+                                myLanguage: myLanguage, theirLanguage: theirLanguage)
+    }
+
+    /// The board as a session record, for export — whether or not it has been
+    /// or ever will be saved.
+    var boardRecord: SessionRecord? {
+        let setup = boardSetup ?? BoardSetup(
+            mode: runningMode, scope: runningScope,
+            myLanguage: myLanguage, theirLanguage: theirLanguage
         )
-        let head = "[\(time)] \(direction.label)"
-        return ([head, transcript, translation]
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n"))
+        return record(setup: setup)
+    }
+
+    private func record(setup: BoardSetup) -> SessionRecord? {
+        let turns = boardTurns
+        guard let first = turns.first, let last = turns.last else { return nil }
+        let endedAt = isRunning ? Date.now : (boardEndedAt ?? last.startedAt)
+        return SessionRecord(
+            id: liveSessionID,
+            startedAt: first.startedAt,
+            endedAt: max(endedAt, last.startedAt),
+            mode: setup.mode,
+            scope: setup.scope,
+            myLanguage: setup.myLanguage,
+            theirLanguage: setup.theirLanguage,
+            turns: turns
+        )
+    }
+
+    /// Writes the board into the history under `liveSessionID`, replacing
+    /// the copy saved last time.
+    private func persistBoard(synchronously: Bool = false) {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        isHistoryDirty = false
+        guard savesHistory, let setup = boardSetup,
+              let record = record(setup: setup) else { return }
+        history.save(record, synchronously: synchronously)
+    }
+
+    /// Called from the text path, so it does as little as possible there: a
+    /// flag, and at most one pending task per interval.
+    private func noteBoardChanged() {
+        guard !isHistoryDirty, boardSetup != nil else { return }
+        isHistoryDirty = true
+        autosaveTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.autosaveDelay)
+            guard !Task.isCancelled else { return }
+            self?.persistBoard()
+        }
     }
 
     // MARK: - audio
@@ -1357,6 +1464,9 @@ final class SubtitleModel {
         // filled in after the fact — otherwise the preview shows a header on
         // every card and none of the grouping the layout is being checked for.
         for index in entries.indices { repairRunFlags(at: index) }
+        // The history pane has the same problem the board has — nothing to
+        // look at without a real call — so the sample goes there too.
+        if let record = boardRecord { history.save(record) }
     }
     #endif
 
@@ -1380,11 +1490,20 @@ final class SubtitleModel {
     /// opening a socket or touching Core Audio, so the status machine can be
     /// driven on its own. Status transitions are the part that differs
     /// per scope, and the part a unit test can otherwise never reach.
-    func beginForTesting(mode: SessionMode = .translate, scope: CaptureScope = .both) {
+    ///
+    /// `preserveTranscript` mirrors `start`'s: false is a fresh session with a
+    /// cleared board, true the internal restart that continues the current one.
+    func beginForTesting(
+        mode: SessionMode = .translate,
+        scope: CaptureScope = .both,
+        preserveTranscript: Bool = true
+    ) {
         isRunning = true
         status = .connecting
         runningMode = mode
         runningScope = scope
+        if !preserveTranscript { clearEntries() }
+        if !preserveTranscript || boardSetup == nil { pinBoard() }
     }
 
     /// Feeds one call-state change through the status machine.
@@ -1428,6 +1547,7 @@ final class SubtitleModel {
     @ObservationIgnored private var isScrollTickScheduled = false
 
     private func noteLiveTextChanged() {
+        noteBoardChanged()
         guard !isScrollTickScheduled else { return }
         isScrollTickScheduled = true
         Task { @MainActor [weak self] in

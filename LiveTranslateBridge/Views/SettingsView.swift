@@ -10,7 +10,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Tab(t("settings.tab.general"), systemImage: "gearshape") {
-                GeneralSettings(localization: localization)
+                GeneralSettings(model: model, localization: localization)
             }
             Tab(t("settings.tab.credentials"), systemImage: "key") {
                 CredentialSettings()
@@ -33,7 +33,9 @@ struct SettingsView: View {
 // MARK: - general
 
 private struct GeneralSettings: View {
+    @Bindable var model: SubtitleModel
     @Bindable var localization: LocalizationStore
+    @State private var confirmsDeleteAll = false
 
     var body: some View {
         Form {
@@ -52,8 +54,44 @@ private struct GeneralSettings: View {
                     .font(.App.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                Toggle(t("settings.history.save"), isOn: $model.savesHistory)
+                HStack(spacing: Theme.spacing12) {
+                    Button(t("settings.history.reveal")) { revealHistory() }
+                        .disabled(model.history.directory == nil)
+                    Button(t("settings.history.deleteAll"), role: .destructive) {
+                        confirmsDeleteAll = true
+                    }
+                    .disabled(model.history.records.isEmpty)
+                }
+            } header: {
+                Text(t("settings.history.section"))
+            } footer: {
+                Text(t("settings.history.footer"))
+                    .font(.App.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
+        .confirmationDialog(t("settings.history.deleteAll.title"),
+                            isPresented: $confirmsDeleteAll,
+                            titleVisibility: .visible) {
+            Button(t("settings.history.deleteAll"), role: .destructive) {
+                // The session still being written would only be saved again
+                // by the next autosave, so it is the one thing left in place.
+                model.history.deleteAll(except: model.isRunning ? model.liveSessionID : nil)
+            }
+        } message: {
+            Text(t("settings.history.deleteAll.message"))
+        }
+    }
+
+    private func revealHistory() {
+        guard let directory = model.history.directory else { return }
+        try? FileManager.default.createDirectory(at: directory,
+                                                 withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([directory])
     }
 }
 

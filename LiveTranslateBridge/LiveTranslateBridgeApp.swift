@@ -11,7 +11,18 @@ import SwiftUI
 struct LiveTranslateBridgeApp: App {
     /// One model for the whole app: the subtitle board and the settings pane
     /// edit the same translation options.
-    @State private var model = SubtitleModel()
+    @State private var model = SubtitleModel(
+        history: SessionHistory(directory: Self.historyDirectory)
+    )
+
+    /// A sample board is for looking at, and must not be saved over the
+    /// user's real history — it gets one that lives in memory only.
+    private static var historyDirectory: URL? {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-sampleBoard") { return nil }
+        #endif
+        return SessionHistory.defaultDirectory
+    }
 
     /// The interface language. A singleton because the Settings scene is a
     /// separate window with no ancestor in common with the main one, and both

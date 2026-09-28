@@ -21,6 +21,21 @@ extension FocusedValues {
     @Entry var subtitleActions: SubtitleActions?
     /// The main window's pane, so the View menu can switch it.
     @Entry var mainPane: Binding<ContentView.Pane>?
+    /// Exports whatever session the visible pane is showing — the live board,
+    /// or the one selected in the history. Nil when there is nothing to export.
+    @Entry var exportSession: ExportAction?
+}
+
+/// "Export as Document…" for whichever pane published it.
+///
+/// Compared by `key` rather than by the closure, which cannot be compared at
+/// all: without it every redraw of the pane would look like a new value and
+/// invalidate the menu bar.
+struct ExportAction: Equatable {
+    let key: String
+    let perform: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
 }
 
 /// The menu bar.
@@ -37,8 +52,15 @@ struct AppCommands: Commands {
 
     @FocusedValue(\.subtitleActions) private var actions
     @FocusedValue(\.mainPane) private var pane
+    @FocusedValue(\.exportSession) private var exportSession
 
     var body: some Commands {
+        CommandGroup(replacing: .importExport) {
+            Button(t("export.menu")) { exportSession?.perform() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(exportSession == nil)
+        }
+
         CommandGroup(after: .pasteboard) {
             Section {
                 Button(t("subtitles.copyAll")) { actions?.copyAll() }

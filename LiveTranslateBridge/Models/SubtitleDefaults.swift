@@ -38,6 +38,8 @@ extension SubtitleModel {
         private static let localTranslationVolumeKey = "localTranslationVolume"
         private static let glossaryKey = "translationGlossary"
         private static let microphoneGateKey = "gatesMicrophoneSilence"
+        private static let historyKey = "savesSessionHistory"
+        private static let exportFormatKey = "sessionExportFormat"
 
         /// The pair a fresh install starts from: we speak Chinese, the far end
         /// English. Stated here rather than as literals at each use, so "what
@@ -210,6 +212,21 @@ extension SubtitleModel {
         static var showsSourceText: Bool {
             get { store.object(forKey: sourceTextKey) as? Bool ?? true }
             set { store.set(newValue, forKey: sourceTextKey) }
+        }
+
+        /// On by default for the same reason as the two above: a transcript
+        /// that vanishes when the board is cleared answers nothing afterwards.
+        static var savesHistory: Bool {
+            get { store.object(forKey: historyKey) as? Bool ?? true }
+            set { store.set(newValue, forKey: historyKey) }
+        }
+
+        static var exportFormat: SessionExport.Format {
+            get {
+                store.string(forKey: exportFormatKey)
+                    .flatMap(SessionExport.Format.init(rawValue:)) ?? .markdown
+            }
+            set { store.set(newValue.rawValue, forKey: exportFormatKey) }
         }
     }
 }
