@@ -1,0 +1,52 @@
+name: Bug report · 问题反馈
+description: Something doesn't work as expected. 功能异常或结果不符合预期。
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste your API key or Workspace ID.** 请勿粘贴 API Key 或 Workspace ID。
+  - type: input
+    id: version
+    attributes:
+      label: App version · 应用版本
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model · 系统版本与机型
+      placeholder: "27.0, MacBook Air M3"
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Audio source app · 声音来源应用
+      placeholder: "avconferenced (Continuity call), Zoom, Chrome…"
+  - type: input
+    id: languages
+    attributes:
+      label: Mode and languages · 模式与语言
+      placeholder: "Two-way translation, zh ↔ en"
+  - type: dropdown
+    id: region
+    attributes:
+      label: Service region · 服务地域
+      options:
+        - Singapore · 新加坡
+        - China North 2 (Beijing) · 华北 2（北京）
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened · 问题描述
+      description: What you expected, what happened instead, and the steps to reproduce. 预期结果、实际结果和复现步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs · 日志
+      description: Optional. Relevant lines from the in-app Log panel. 可选。应用内「日志」面板中的相关内容。
+      render: text
