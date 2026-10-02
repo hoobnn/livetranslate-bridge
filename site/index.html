@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LiveTranslateBridge：macOS 实时语音翻译与双语字幕</title>
+<meta name="description" content="LiveTranslateBridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。">
+<link rel="canonical" href="https://hoobnn.github.io/livetranslate-bridge/">
+<link rel="icon" href="icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="LiveTranslateBridge：macOS 实时语音翻译与双语字幕">
+<meta property="og:description" content="LiveTranslateBridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。">
+<meta property="og:url" content="https://hoobnn.github.io/livetranslate-bridge/">
+<meta property="og:image" content="https://hoobnn.github.io/livetranslate-bridge/social-preview.jpg">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:locale:alternate" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "LiveTranslateBridge", "operatingSystem": "macOS 27+", "applicationCategory": "UtilitiesApplication", "description": "LiveTranslateBridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。", "url": "https://hoobnn.github.io/livetranslate-bridge/", "downloadUrl": "https://github.com/hoobnn/livetranslate-bridge/releases/latest", "softwareVersion": "__VERSION__", "license": "https://opensource.org/licenses/MIT", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "image": "https://hoobnn.github.io/livetranslate-bridge/social-preview.jpg", "author": {"@type": "Person", "name": "hoobnn", "url": "https://github.com/hoobnn"}}</script>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1d1f;--mut:#6e6e73;--card:#fff;--line:rgba(0,0,0,.09);--acc:#1d63ed;--code:#f2f1ed}
+@media (prefers-color-scheme:dark){:root{--bg:#111214;--fg:#f2f2f4;--mut:#a1a1a8;--card:#1b1c1f;--line:rgba(255,255,255,.1);--code:#1f2023}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+main{max-width:920px;margin:0 auto;padding:0 20px 80px}
+header{text-align:center;padding:72px 0 40px}header img.icon{width:104px;height:104px;border-radius:22px}
+h1{font-size:44px;line-height:1.15;margin:18px 0 10px;letter-spacing:-.5px}h1 small{display:block;font-size:22px;font-weight:500;color:var(--mut);margin-top:10px;letter-spacing:0}
+.btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:26px}
+.btn{display:inline-block;padding:11px 22px;border-radius:12px;text-decoration:none;font-weight:600;border:1px solid var(--line);color:var(--fg);background:var(--card)}
+.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}
+.meta{color:var(--mut);font-size:14px;margin-top:14px}
+pre,code{font-family:"SF Mono",Menlo,monospace;font-size:14.5px}pre{background:var(--code);padding:14px 18px;border-radius:12px;overflow-x:auto;border:1px solid var(--line)}
+code{background:var(--code);padding:1px 6px;border-radius:6px}pre code{background:none;padding:0}
+.shots{display:grid;grid-template-columns:1fr;gap:16px;margin:10px 0 30px}.shots img{width:100%;border-radius:14px;border:1px solid var(--line)}
+h2{font-size:26px;margin:48px 0 12px}h3{font-size:18px;margin:22px 0 4px}ul{padding-left:1.2em}li{margin:4px 0}
+a{color:var(--acc)}footer{color:var(--mut);font-size:14px;border-top:1px solid var(--line);margin-top:56px;padding-top:20px}
+#en{margin-top:64px;padding-top:8px;border-top:1px solid var(--line)}
+@media (max-width:640px){h1{font-size:34px}.shots{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<img class="icon" src="icon.png" alt="LiveTranslateBridge 图标" width="104" height="104">
+<h1>LiveTranslateBridge<small>macOS 实时语音翻译与双语字幕</small></h1>
+<div class="btns"><a class="btn p" href="https://github.com/hoobnn/livetranslate-bridge/releases/latest">下载 DMG</a><a class="btn" href="https://github.com/hoobnn/livetranslate-bridge">GitHub</a><a class="btn" href="#en" hreflang="en">English</a></div>
+<div class="meta">macOS 27 及以上 · Apple Silicon · 免费开源（MIT） · 当前版本 __VERSION__</div>
+</header>
+
+<div class="shots"><picture><source media="(prefers-color-scheme: dark)" srcset="app-subtitles-dark.jpg"><img src="app-subtitles-light.jpg" alt="LiveTranslateBridge 实时翻译界面：中英文双向字幕左右分栏" loading="lazy"></picture></div>
+<p>它同时采集某个应用的声音（Mac 上接的 iPhone 电话、视频会议、浏览器、播放器）和你的麦克风，交给阿里云百炼的 Qwen 实时翻译模型，出双向字幕，也可以把译文念出来。对方说英语，你看到中文字幕、听到中文；你说中文，对方听到的是英语。</p>
+<h2>安装</h2>
+<pre><code>brew install --cask hoobnn/tap/livetranslate-bridge</code></pre>
+<p>或者到 <a href="https://github.com/hoobnn/livetranslate-bridge/releases/latest">GitHub Releases</a> 下载已签名、已公证的 DMG。翻译要用你自己的<a href="https://bailian.console.aliyun.com/">阿里云百炼</a>（国内）或 <a href="https://modelstudio.console.alibabacloud.com/">Model Studio</a>（国际）账号，在设置里填 API Key 和业务空间 ID。</p>
+<h2>能用在哪</h2>
+<ul>
+<li>在 Mac 上接 iPhone 来电，实时翻译对方的话，也把你的话译给对方。</li>
+<li>跨语言的视频会议：Zoom、腾讯会议、Teams 都行，按应用采集声音。配一个回环声卡（如 BlackHole），还能把你的译声送进会议。</li>
+<li>看外语直播、视频、网课，边看边出字幕。</li>
+<li>只做记录：不翻译，把双方原话按时间记下来，导出成 Markdown 或 Word。</li>
+</ul>
+<h2>功能</h2>
+<ul>
+<li>中文、英语、日语、韩语、法语、德语、西班牙语、俄语，两边分开选。</li>
+<li>原声和译声分别送到不同的输出设备，音量各调各的。</li>
+<li>术语表：人名、产品名每次译得一样。</li>
+<li>音色复刻：用说话人自己的音色念译文。</li>
+<li>对方没声音时暂停上传，省用量。</li>
+<li>字幕只存在本机，可以搜索、导出、删除；不录任何音频。</li>
+</ul>
+<h2>常见问题</h2>
+<h3>收费吗？</h3>
+<p>App 免费开源。翻译按你自己百炼账号的标准价格计费。</p>
+<h3>延迟多少？</h3>
+<p>译声比原话晚 1–3 秒，积压时会自动加快播放。</p>
+<h3>Intel Mac 或旧版 macOS 能用吗？</h3>
+<p>不能。目前只支持 macOS 27 及以上的 Apple Silicon Mac。</p>
+
+<section id="en" lang="en">
+
+<h2>Real-time speech translation and bilingual subtitles for macOS</h2>
+<p>LiveTranslateBridge captures one app's audio (an iPhone call answered on your Mac, a meeting app, a browser) plus your microphone, sends both to Alibaba Cloud's Qwen LiveTranslate model under your own account, and shows two-way subtitles. It can also speak the translation, routed to whichever output device you choose. Free and open source (MIT), macOS 27+ on Apple Silicon.</p>
+<pre><code>brew install --cask hoobnn/tap/livetranslate-bridge</code></pre>
+<ul>
+<li>8 languages: Chinese, English, Japanese, Korean, French, German, Spanish, Russian.</li>
+<li>Works with Zoom, Teams, Google Meet or any app, since audio is captured per app.</li>
+<li>Glossary, voice cloning, pause-on-silence, and Markdown / Word export.</li>
+<li>Only subtitle text is saved on your Mac. No audio is recorded.</li>
+</ul>
+<p>Full documentation is in the <a href="https://github.com/hoobnn/livetranslate-bridge/blob/main/README.en.md">English README</a>.</p>
+
+</section>
+<footer>LiveTranslateBridge 由 <a href="https://github.com/hoobnn">hoobnn</a> 开发。<a href="https://github.com/hoobnn/livetranslate-bridge">源代码</a> · <a href="https://github.com/hoobnn/livetranslate-bridge/issues">反馈问题</a> · MIT License</footer>
+</main>
+</body>
+</html>

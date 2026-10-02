@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://hoobnn.github.io/livetranslate-bridge/sitemap.xml
