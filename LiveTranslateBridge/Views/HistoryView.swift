@@ -113,6 +113,8 @@ struct HistoryView: View {
     private func rowMenu(_ record: SessionRecord) -> some View {
         Button(t("export.menu")) { ExportPanel.present(record) }
         Button(t("subtitles.copyAll")) { copy(record) }
+        Button(t("history.recording.reveal")) { revealRecordings(of: record) }
+            .disabled(history.recordings(for: record.id).isEmpty)
         Divider()
         Button(t("history.delete"), role: .destructive) { pendingDeletion = record.id }
             .disabled(isLive(record))
@@ -153,6 +155,15 @@ struct HistoryView: View {
             .accessibilityIdentifier("history.export")
 
             Button {
+                if let selected { revealRecordings(of: selected) }
+            } label: {
+                Label(t("history.recording.reveal"), systemImage: "waveform")
+            }
+            .disabled(selected.map { history.recordings(for: $0.id).isEmpty } ?? true)
+            .help(t("history.recording.reveal"))
+            .accessibilityIdentifier("history.recording")
+
+            Button {
                 pendingDeletion = selected?.id
             } label: {
                 Label(t("history.delete"), systemImage: "trash")
@@ -181,6 +192,12 @@ struct HistoryView: View {
         history.delete(id)
         if selection == id { selection = next }
         pendingDeletion = nil
+    }
+
+    private func revealRecordings(of record: SessionRecord) {
+        let files = history.recordings(for: record.id)
+        guard !files.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(files)
     }
 
     private func copy(_ record: SessionRecord) {

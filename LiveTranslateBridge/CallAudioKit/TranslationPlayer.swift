@@ -72,6 +72,9 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
     private var lastMetric: ContinuousClock.Instant = .now
     public var onPlaybackChange: (@Sendable (Bool) -> Void)?
     public var onWarning: (@Sendable (String) -> Void)?
+    /// Each piece of translated speech as it is queued to play, in the
+    /// order it will be heard. Called on the control queue.
+    public var onTranslationQueued: (@Sendable (Data) -> Void)?
 
     /// Shared between the control queue (writes targets, reads counters) and
     /// the render thread (reads targets, bumps counters).
@@ -229,6 +232,7 @@ nonisolated public final class TranslationPlayer: @unchecked Sendable {
                 }
                 ring.write(frames: frames) { _ in UnsafePointer(floats.baseAddress!) }
             }
+            onTranslationQueued?(pcm)
             if !reportedPlaying { reportedPlaying = true; onPlaybackChange?(true) }
             if let stopped = lastSpeechStop {
                 BridgeLog.audio.notice("speech-stop to first audio received: \(String(describing: stopped.duration(to: .now)), privacy: .public); queued ahead \(ahead) s (not measured hardware latency)")

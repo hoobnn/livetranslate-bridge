@@ -47,6 +47,7 @@ In practice: the other person speaks English, you read and hear Chinese; you spe
 - Glossary: one `term = translation` per line, so names and product terms come out the same every time.
 - Lower usage: uploads pause while the far end is silent, and optionally during long microphone silence. Set a side's translated volume to 0 and only text is requested.
 - Session history: each session's subtitles are saved locally (`~/Library/Application Support/com.ikuyu.livetranslate-bridge/Sessions`) and can be reread, searched and deleted on the History tab. Turn it off in Settings › General.
+- Session recordings: turn on "Also save audio recordings" in Settings › General and each side's original voice and the translated speech played for it are kept as separate `.m4a` files (mono AAC, 16 kHz originals, 24 kHz translations) on one shared timeline, so they can be laid over each other; the waveform button on the History tab shows it in Finder. Off by default; deleting a session deletes its recordings too.
 - Export the current board or any saved session to Markdown, plain text or Word (.docx) from File › Export as Document… (⇧⌘E).
 - Diagnostics: check the source process and both sides' levels, replay samples offline to test the translation pipeline, and clean up aggregate devices left behind by a crash.
 - SwiftUI interface in Chinese or English (switchable on the fly), with Liquid Glass and light/dark appearances.

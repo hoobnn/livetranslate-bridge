@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import Foundation
 import Observation
+import Synchronization
 
 /// Drives the subtitle view: owns the call session and the translation sockets,
 /// and turns their callbacks into observable state.
@@ -330,7 +331,10 @@ final class SubtitleModel {
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.persistBoard(synchronously: true) }
+            MainActor.assumeIsolated {
+                self?.persistBoard(synchronously: true)
+                self?.endRecording()
+            }
         }
     }
 
@@ -735,6 +739,16 @@ final class SubtitleModel {
         }
     }
 
+    /// Whether a session's captured audio is kept beside its transcript.
+    /// Read when a session starts; only takes effect while `savesHistory`
+    /// is on, since a recording no history entry lists cannot be found again.
+    var savesRecording = Defaults.savesRecording {
+        didSet {
+            guard savesRecording != oldValue else { return }
+            Defaults.savesRecording = savesRecording
+        }
+    }
+
     /// The scope the entries on the board were produced under. Pinned at
     /// `start()` alongside `runningMode`, and read by views for the same
     /// reason — the board outlives the session that filled it.
@@ -921,6 +935,7 @@ final class SubtitleModel {
         if !preserveTranscript {
             clearEntries()
             pinBoard()
+            if recorder == nil { beginRecording() }
         }
         if scope.captures(.local) {
             guard !AudioRoutePolicy.missingExplicitInput(uid: inputDeviceUID, resolved: inputDevice) else {
@@ -1062,6 +1077,9 @@ final class SubtitleModel {
         let player = TranslationPlayer()
         let generation = sessionGeneration
         let shouldDuck = direction == .remote && ducksOriginal
+        player.onTranslationQueued = { [weak self] pcm in
+            self?.recordTranslation(pcm, from: direction)
+        }
         player.onWarning = { [weak self] message in
             Task { @MainActor [weak self] in
                 guard let self, self.isRunning, self.sessionGeneration == generation else { return }
@@ -1126,6 +1144,8 @@ final class SubtitleModel {
         // still on the board, and they are still what that mode produced.
         boardEndedAt = .now
         persistBoard()
+        // An internal restart continues the same session, and its recording.
+        if !preserveRouteWatcher { endRecording() }
     }
 
     /// Empties the board without touching the session, so a long call can be
@@ -1136,6 +1156,8 @@ final class SubtitleModel {
     /// here", and the part before it stays in the history as it was.
     func clearEntries() {
         persistBoard()
+        let wasRecording = recorder != nil
+        endRecording()
         liveSessionID = UUID()
         boardEndedAt = nil
         serverEntries.removeAll(); serverAliases.removeAll()
@@ -1144,6 +1166,7 @@ final class SubtitleModel {
         entries.removeAll()
         archivedEntries.removeAll()
         liveEntries.removeAll()
+        if wasRecording && isRunning { beginRecording() }
     }
 
     /// The whole board as text, source line above translation, for the copy
@@ -1252,6 +1275,42 @@ final class SubtitleModel {
             try? await Task.sleep(for: Self.autosaveDelay)
             guard !Task.isCancelled else { return }
             self?.persistBoard()
+        }
+    }
+
+    // MARK: - recording
+
+    @ObservationIgnored private var recorder: SessionRecorder? {
+        didSet { liveRecorder.withLock { $0 = recorder } }
+    }
+
+    /// `recorder` again, for the playback queues, which never hop to the
+    /// main actor. Clearing the board swaps it without reopening playback.
+    private nonisolated let liveRecorder = Mutex<SessionRecorder?>(nil)
+
+    private nonisolated func recordTranslation(_ pcm: Data, from direction: Direction) {
+        liveRecorder.withLock { $0 }?.append(pcm, to: .translation(direction))
+    }
+
+    /// Starts recording under `liveSessionID`, if the user keeps recordings.
+    private func beginRecording() {
+        guard savesHistory, savesRecording, let directory = history.directory else { return }
+        let recorder = SessionRecorder(id: liveSessionID, directory: directory)
+        self.recorder = recorder
+        downlinkPath.record(into: recorder)
+        uplinkPath.record(into: recorder)
+    }
+
+    /// Closes the files. Call after `persistBoard`: a session that left no
+    /// transcript has no history entry, and its audio goes with it.
+    private func endRecording() {
+        guard let recorder else { return }
+        self.recorder = nil
+        downlinkPath.record(into: nil)
+        uplinkPath.record(into: nil)
+        recorder.finish()
+        if history.record(id: recorder.id) == nil {
+            history.deleteRecordings(for: recorder.id)
         }
     }
 

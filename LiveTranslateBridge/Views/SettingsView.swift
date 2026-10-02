@@ -57,6 +57,8 @@ private struct GeneralSettings: View {
 
             Section {
                 Toggle(t("settings.history.save"), isOn: $model.savesHistory)
+                Toggle(t("settings.history.recording"), isOn: $model.savesRecording)
+                    .disabled(!model.savesHistory)
                 HStack(spacing: Theme.spacing12) {
                     Button(t("settings.history.reveal")) { revealHistory() }
                         .disabled(model.history.directory == nil)

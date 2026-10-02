@@ -39,6 +39,7 @@ extension SubtitleModel {
         private static let glossaryKey = "translationGlossary"
         private static let microphoneGateKey = "gatesMicrophoneSilence"
         private static let historyKey = "savesSessionHistory"
+        private static let recordingKey = "savesSessionRecording"
         private static let exportFormatKey = "sessionExportFormat"
 
         /// The pair a fresh install starts from: we speak Chinese, the far end
@@ -219,6 +220,13 @@ extension SubtitleModel {
         static var savesHistory: Bool {
             get { store.object(forKey: historyKey) as? Bool ?? true }
             set { store.set(newValue, forKey: historyKey) }
+        }
+
+        /// Off by default, unlike the text: keeping the audio of a call is
+        /// a step the user takes, not one they have to undo.
+        static var savesRecording: Bool {
+            get { store.bool(forKey: recordingKey) }
+            set { store.set(newValue, forKey: recordingKey) }
         }
 
         static var exportFormat: SessionExport.Format {

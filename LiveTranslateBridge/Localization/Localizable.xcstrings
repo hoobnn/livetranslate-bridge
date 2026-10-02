@@ -4050,6 +4050,23 @@
         }
       }
     },
+    "history.recording.reveal" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show Recording in Finder"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在访达中显示录音"
+          }
+        }
+      }
+    },
     "history.search" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4186,6 +4203,23 @@
         }
       }
     },
+    "settings.history.recording" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Also save audio recordings"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同时保存录音"
+          }
+        }
+      }
+    },
     "settings.history.reveal" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4260,13 +4294,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Only text is kept, never audio. Sessions are stored on this Mac in Application Support and are never uploaded."
+            "value" : "Audio is kept only when recordings are on: each side's original voice and the translated speech played for it, one AAC file each on a shared timeline, next to the transcript. Sessions are stored on this Mac in Application Support and are never uploaded."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "只保存文字，不保存音频。会话保存在本机的“应用程序支持”文件夹中，不会上传。"
+            "value" : "打开“保存录音”后才会保存音频：两侧的原声和播放出来的译声各存一个 AAC 文件，时间轴对齐，和文字放在一起。会话保存在本机的“应用程序支持”文件夹中，不会上传。"
           }
         }
       }

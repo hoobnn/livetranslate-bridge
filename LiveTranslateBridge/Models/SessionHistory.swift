@@ -82,9 +82,21 @@ final class SessionHistory {
     func delete(_ id: SessionRecord.ID) {
         records.removeAll { $0.id == id }
         guard let directory else { return }
-        Task.detached(priority: .utility) {
-            try? FileManager.default.removeItem(at: Self.file(for: id, in: directory))
-        }
+        Task.detached(priority: .utility) { Self.removeFiles(for: id, in: directory) }
+    }
+
+    /// The session's audio, one file per track that sounded.
+    func recordings(for id: SessionRecord.ID) -> [URL] {
+        guard let directory else { return [] }
+        return SessionRecorder.Track.allCases
+            .map { Self.recordingURL(for: id, track: $0, in: directory) }
+            .filter { FileManager.default.fileExists(atPath: $0.path(percentEncoded: false)) }
+    }
+
+    /// Removes the audio alone, for a recording whose session never made it
+    /// into the history — it would otherwise sit there with nothing to list it.
+    func deleteRecordings(for id: SessionRecord.ID) {
+        for url in recordings(for: id) { try? FileManager.default.removeItem(at: url) }
     }
 
     func deleteAll(except kept: SessionRecord.ID? = nil) {
@@ -92,9 +104,7 @@ final class SessionHistory {
         records.removeAll { $0.id != kept }
         guard let directory else { return }
         Task.detached(priority: .utility) {
-            for id in doomed {
-                try? FileManager.default.removeItem(at: Self.file(for: id, in: directory))
-            }
+            for id in doomed { Self.removeFiles(for: id, in: directory) }
         }
     }
 
@@ -106,6 +116,22 @@ final class SessionHistory {
 
     private nonisolated static func file(for id: UUID, in directory: URL) -> URL {
         directory.appending(path: id.uuidString + ".json", directoryHint: .notDirectory)
+    }
+
+    nonisolated static func recordingURL(
+        for id: UUID, track: SessionRecorder.Track, in directory: URL
+    ) -> URL {
+        directory.appending(path: "\(id.uuidString)-\(track.rawValue).m4a",
+                            directoryHint: .notDirectory)
+    }
+
+    private nonisolated static func removeFiles(for id: UUID, in directory: URL) {
+        try? FileManager.default.removeItem(at: file(for: id, in: directory))
+        for track in SessionRecorder.Track.allCases {
+            try? FileManager.default.removeItem(
+                at: recordingURL(for: id, track: track, in: directory)
+            )
+        }
     }
 
     private nonisolated static func sorted(_ records: [SessionRecord]) -> [SessionRecord] {

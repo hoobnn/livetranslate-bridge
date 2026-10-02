@@ -416,6 +416,67 @@ struct CaptureConversionTests {
         #expect(abs(Double(loudest) / 32_768 - 0.3) < 0.02)
     }
 
+    /// Recording does not depend on a socket: the converted audio of a side
+    /// lands in that side's file, and only that side's, and plays back at
+    /// the length it was captured.
+    @Test func recordingKeepsEachCapturedSideInItsOwnFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = SessionRecorder(id: UUID(), directory: directory)
+        let path = SubtitleModel.AudioPath(direction: .remote)
+        path.record(into: recorder)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        for block in 0..<94 {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+            buffer.frameLength = 512
+            for channel in 0..<2 {
+                for frame in 0..<512 {
+                    buffer.floatChannelData![channel][frame] = 0.3 * sin(Float(block * 512 + frame) * 2 * .pi * 440 / 48_000)
+                }
+            }
+            path.enqueueForTesting(buffer)
+            if block % 8 == 7 { path.drainForTesting() }
+        }
+        path.drainForTesting()
+        recorder.finish()
+        let remote = SessionHistory.recordingURL(for: recorder.id, track: .remote, in: directory)
+        let local = SessionHistory.recordingURL(for: recorder.id, track: .local, in: directory)
+        #expect(!FileManager.default.fileExists(atPath: local.path(percentEncoded: false)))
+        let file = try AVAudioFile(forReading: remote)
+        #expect(file.fileFormat.sampleRate == 16_000)
+        let seconds = Double(file.length) / file.fileFormat.sampleRate
+        #expect(abs(seconds - 1.0) < 0.1)
+    }
+
+    /// Translated speech arrives in bursts. The quiet between two replies
+    /// is kept as silence, so the track stays on the session's timeline;
+    /// the silence before anything was heard is not.
+    @Test func translationRecordingKeepsTheGapBetweenReplies() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = SessionRecorder(id: UUID(), directory: directory)
+        // What an idle microphone delivers before anyone speaks: not kept,
+        // and the timeline does not start until there is sound.
+        recorder.append(Data(count: 1_600 * 2), to: .original(.local))
+        Thread.sleep(forTimeInterval: 0.5)
+        let reply = Data(repeating: 0x40, count: 4_800 * 2) // 0.2 s at 24 kHz
+        recorder.append(reply, to: .translation(.remote))
+        Thread.sleep(forTimeInterval: 1)
+        recorder.append(reply, to: .translation(.remote))
+        recorder.finish()
+        let file = try AVAudioFile(forReading: SessionHistory.recordingURL(
+            for: recorder.id, track: .remoteTranslation, in: directory
+        ))
+        #expect(file.fileFormat.sampleRate == 24_000)
+        let seconds = Double(file.length) / file.fileFormat.sampleRate
+        #expect(abs(seconds - 1.2) < 0.1)
+        #expect(!FileManager.default.fileExists(atPath: SessionHistory.recordingURL(
+            for: recorder.id, track: .local, in: directory
+        ).path(percentEncoded: false)))
+    }
+
     /// Helpers nested in an app bundle belong to that app, not to themselves.
     @Test func helperProcessesResolveToOutermostApp() {
         let helper = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/140/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"

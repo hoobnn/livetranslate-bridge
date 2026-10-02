@@ -22,6 +22,9 @@ extension SubtitleModel {
         /// Converted PCM not yet long enough to make a chunk.
         private var staged = Data()
         private var gate: SilenceGate?
+        /// Set apart from the client: an internal restart reinstalls the
+        /// client, but the recording carries on under the same session.
+        private var recorder: SessionRecorder?
         private let queue: RealtimeAudioQueue
         private let callback: Callback
 
@@ -62,6 +65,11 @@ extension SubtitleModel {
             }
         }
 
+        /// Starts or, with nil, stops handing converted audio to `recorder`.
+        func record(into recorder: SessionRecorder?) {
+            queue.perform { [weak self] in self?.recorder = recorder }
+        }
+
         private static func makeGate(direction: Direction, gatesMicrophone: Bool) -> SilenceGate? {
             switch direction {
             case .remote: return .digitalSilence()
@@ -90,7 +98,7 @@ extension SubtitleModel {
                 if resampler == nil { BridgeLog.audio.error("resampler could not be built") }
             }
             guard let resampler else { return }
-            guard let client else {
+            guard client != nil || recorder != nil else {
                 report(dropped: "no client installed")
                 return
             }
@@ -98,6 +106,10 @@ extension SubtitleModel {
                 report(dropped: "conversion produced no bytes")
                 return
             }
+            // Before the silence gate, which would cut the quiet stretches
+            // out of the recording's timeline.
+            recorder?.append(pcm, to: .original(direction))
+            guard let client else { return }
             report(sent: pcm)
             stage(pcm, to: client)
         }
