@@ -17,7 +17,7 @@ Live speech translation and bilingual subtitles for macOS. Calls, meetings, anyt
 
 LiveTranslateBridge is an open-source macOS app. It captures one app's audio (an iPhone call answered on your Mac, a video meeting, a browser, a media player) along with your microphone, sends both to Alibaba Cloud's Qwen real-time translation model (qwen3.8 LiveTranslate), and gives you subtitles in both directions, plus spoken translations if you want them. Original and translated audio go to the output devices you pick, each at its own volume.
 
-In practice: the other person speaks English, you read and hear Chinese; you speak Chinese, they hear English.
+For example: the other person speaks English, you read and hear Chinese; you speak Chinese, they hear English.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/product/app-subtitles-dark.jpg">
@@ -85,7 +85,7 @@ You need a loopback audio device such as [BlackHole](https://existential.audio/b
 Yes. Audio is captured per app, not through any meeting-app integration, so just pick the meeting app (or the browser it runs in) as the source. Continuity calls are played by the system process `avconferenced`, which is the default source (see the [call audio findings](docs/findings.md), in Chinese).
 
 **Does it record calls? Where does my data go?**
-Nothing is recorded. Audio is streamed to Model Studio under your own account for translation. Only subtitle text stays on your Mac, and you can turn that off or delete it anytime.
+Not by default. Audio is streamed to Model Studio under your own account for translation. By default only subtitle text stays on your Mac, and you can turn that off or delete it anytime. Audio is saved locally only if you turn on "Also save audio recordings".
 
 **How much delay is there?**
 Translated speech is 1–3 seconds behind the original and speeds up when it falls behind.
@@ -99,7 +99,7 @@ No. It needs macOS 27 or later and only ships for Apple Silicon.
 ## Known limitations
 
 - Not sandboxed: the sandbox rejects process taps and aggregate devices, so it can't go on the Mac App Store.
-- No audio recording: only subtitle text is saved. Recording a call usually needs everyone's consent.
+- No audio saved by default: recordings must be turned on in Settings. Recording a call usually needs everyone's consent.
 - No echo cancellation: on speakers, the microphone picks up the other side and the translated voice. Headphones or a loopback output avoid this.
 - Translated speech trails the original by 1–3 seconds and speeds up when it falls behind. If you don't want the two to overlap, set that side's original volume to 0.
 
