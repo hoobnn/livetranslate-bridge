@@ -19,5 +19,12 @@ xcodebuild \
   -u "$DERIVED/Build/Products/Release/LiveTranslateBridge.app" 2>/dev/null || true
 
 mkdir -p dist
-ditto "$DERIVED/Build/Products/Release/LiveTranslateBridge.app" dist/LiveTranslateBridge.app
-echo "Built dist/LiveTranslateBridge.app"
+APP=dist/LiveTranslateBridge.app
+ditto "$DERIVED/Build/Products/Release/LiveTranslateBridge.app" "$APP"
+
+# Sparkle 的 XPC 服务只有沙盒 App 才用得上，本 App 未开沙盒。CI 重签名时
+# 也保不住 Downloader.xpc 自带的 entitlements，所以直接去掉，由 Sparkle
+# 在进程内完成下载与安装。若日后开启沙盒，这里要改为保留并单独签名。
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+rm -rf "$SPARKLE/XPCServices" "$SPARKLE"/Versions/*/XPCServices
+echo "Built $APP"
