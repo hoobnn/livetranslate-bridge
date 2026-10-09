@@ -64,6 +64,10 @@ brew install --cask hoobnn/tap/livetranslate-bridge
 
 也可以从 [GitHub Releases](https://github.com/hoobnn/livetranslate-bridge/releases/latest) 下载 DMG，安装包已签名并通过 Apple 公证。
 
+### 更新
+
+App 通过 [Sparkle](https://sparkle-project.org/) 自动检查新版本，发现后提示安装；也可以在应用菜单中选「检查更新…」手动检查，或在「设置 › 通用 › 更新」关闭自动检查。更新包经 EdDSA 签名校验后才会安装。1.0.0 还没有这项功能，需要手动更新一次（`brew upgrade --cask livetranslate-bridge` 或重新下载 DMG）。
+
 ## 首次使用
 
 1. 在[阿里云百炼](https://bailian.console.aliyun.com/)（国内）或 [Alibaba Cloud Model Studio](https://modelstudio.console.alibabacloud.com/)（国际）获取 API Key 和业务空间 ID。
@@ -117,6 +121,8 @@ open LiveTranslateBridge.xcodeproj    # 在 Xcode 里运行
 ## 发布流程
 
 推送到 main 或提交 PR 时，CI 只运行单元测试（`.github/workflows/ci.yml`）。推送 `v*` 标签会触发 `.github/workflows/release.yml`：先运行同一套测试，再构建、使用 Developer ID 签名并公证，最后发布 GitHub Release 并更新 Homebrew tap。标签中的版本号必须与工程中的 `MARKETING_VERSION` 一致。
+
+应用内更新的 appcast 不进版本库：发布时 CI 用仓库 secret `SPARKLE_ED_PRIVATE_KEY` 给 zip 签名，随 Release 附上 `.zip.sparkle.json`；随后重新部署 GitHub Pages（`.github/workflows/pages.yml`），从全部 Release 生成 `https://hoobnn.github.io/livetranslate-bridge/appcast.xml`。删除某个 Release，它对应的更新条目也随之消失。
 
 ## 文档
 

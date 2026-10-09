@@ -64,6 +64,10 @@ brew install --cask hoobnn/tap/livetranslate-bridge
 
 Or download the DMG from [GitHub Releases](https://github.com/hoobnn/livetranslate-bridge/releases/latest). It's signed and notarized by Apple.
 
+### Updating
+
+The app checks for new versions with [Sparkle](https://sparkle-project.org/) and offers to install them. You can also check by hand with Check for Updates… in the app menu, or turn automatic checks off in Settings › General › Updates. Updates are installed only after their EdDSA signature is verified. 1.0.0 predates this, so update it once by hand (`brew upgrade --cask livetranslate-bridge` or a fresh DMG).
+
 ## First run
 
 1. Get an API key and workspace ID from [Alibaba Cloud Model Studio](https://modelstudio.console.alibabacloud.com/) (international) or [Bailian](https://bailian.console.aliyun.com/) (mainland China).
@@ -117,6 +121,8 @@ When debugging, the environment variables `DASHSCOPE_API_KEY` / `DASHSCOPE_WORKS
 ## Releases
 
 Pushes to main and pull requests only run unit tests (`.github/workflows/ci.yml`). Pushing a `v*` tag runs `.github/workflows/release.yml`: the same tests, then build, Developer ID signing, notarization, the GitHub Release and a Homebrew tap update. The tag version has to match `MARKETING_VERSION` in the project.
+
+The appcast for in-app updates isn't committed. During a release CI signs the zip with the repository secret `SPARKLE_ED_PRIVATE_KEY` and attaches a `.zip.sparkle.json` to the Release, then redeploys GitHub Pages (`.github/workflows/pages.yml`), which builds `https://hoobnn.github.io/livetranslate-bridge/appcast.xml` from all Releases. Deleting a Release removes its entry too.
 
 ## Docs
 
