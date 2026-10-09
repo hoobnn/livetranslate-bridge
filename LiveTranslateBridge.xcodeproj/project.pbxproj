@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		253B9C90305FB806002AE118 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 253B9C92305FB806002AE118 /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		253B9C75305FB806002AE118 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -64,6 +68,7 @@
 		253B9C64305FB805002AE118 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				253B9C90305FB806002AE118 /* Sparkle in Frameworks */,
 			);
 		};
 		253B9C71305FB806002AE118 /* Frameworks */ = {
@@ -116,6 +121,9 @@
 				253B9C69305FB805002AE118 /* LiveTranslateBridge */,
 			);
 			name = LiveTranslateBridge;
+			packageProductDependencies = (
+				253B9C92305FB806002AE118 /* Sparkle */,
+			);
 			productName = LiveTranslateBridge;
 			productReference = 253B9C67305FB805002AE118 /* LiveTranslateBridge.app */;
 			productType = "com.apple.product-type.application";
@@ -195,6 +203,9 @@
 			);
 			mainGroup = 253B9C5E305FB805002AE118;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				253B9C91305FB806002AE118 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 253B9C68305FB805002AE118 /* Products */;
 			projectDirPath = "";
@@ -559,6 +570,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		253B9C91305FB806002AE118 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.10.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		253B9C92305FB806002AE118 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 253B9C91305FB806002AE118 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 253B9C5F305FB805002AE118 /* Project object */;
 	validationLevel = 1;
