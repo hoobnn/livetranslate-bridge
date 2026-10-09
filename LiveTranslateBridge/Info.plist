@@ -26,5 +26,11 @@
 	<string>用于采集通话应用播放的系统音频，生成实时字幕与翻译。</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>用于采集本机通话上行音频，生成实时字幕与翻译。</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://hoobnn.github.io/livetranslate-bridge/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>jIx/CD2HwaePRxwwK4U3iiby2zEzFKfqYLkvsyRkIvM=</string>
 </dict>
 </plist>

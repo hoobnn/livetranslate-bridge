@@ -3744,6 +3744,23 @@
         }
       }
     },
+    "menu.checkForUpdates" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check for Updates…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查更新…"
+          }
+        }
+      }
+    },
     "tab.history" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4301,6 +4318,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开“保存录音”后才会保存音频：两侧的原声和播放出来的译声各存一个 AAC 文件，时间轴对齐，和文字放在一起。会话保存在本机的“应用程序支持”文件夹中，不会上传。"
+          }
+        }
+      }
+    },
+    "settings.updates.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新"
+          }
+        }
+      }
+    },
+    "settings.updates.automatic" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatically check for updates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动检查更新"
+          }
+        }
+      }
+    },
+    "settings.updates.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version %@. New versions are published on GitHub Releases and verified by signature before installing."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前版本 %@。新版本发布在 GitHub Releases，安装前会校验签名。"
           }
         }
       }

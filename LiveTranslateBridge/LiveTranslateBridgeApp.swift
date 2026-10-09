@@ -29,6 +29,10 @@ struct LiveTranslateBridgeApp: App {
     /// have to relabel together when the language changes.
     @State private var localization = LocalizationStore.shared
 
+    /// Sparkle's updater. Created with the app so scheduled checks run from
+    /// launch, not from the first time someone opens a menu.
+    @State private var updater = AppUpdater.shared
+
     var body: some Scene {
         Window("LiveTranslateBridge", id: "main") {
             ContentView(model: model)
@@ -51,10 +55,10 @@ struct LiveTranslateBridgeApp: App {
         }
         .defaultSize(width: 1040, height: 680)
         .windowToolbarStyle(.unified)
-        .commands { AppCommands(model: model) }
+        .commands { AppCommands(model: model, updater: updater) }
 
         Settings {
-            SettingsView(model: model, localization: localization)
+            SettingsView(model: model, localization: localization, updater: updater)
                 .localized(localization)
         }
     }

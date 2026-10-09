@@ -5,12 +5,13 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var model: SubtitleModel
     @Bindable var localization: LocalizationStore
+    let updater: AppUpdater
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TabView {
             Tab(t("settings.tab.general"), systemImage: "gearshape") {
-                GeneralSettings(model: model, localization: localization)
+                GeneralSettings(model: model, localization: localization, updater: updater)
             }
             Tab(t("settings.tab.credentials"), systemImage: "key") {
                 CredentialSettings()
@@ -35,6 +36,7 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @Bindable var model: SubtitleModel
     @Bindable var localization: LocalizationStore
+    @Bindable var updater: AppUpdater
     @State private var confirmsDeleteAll = false
 
     var body: some View {
@@ -71,6 +73,19 @@ private struct GeneralSettings: View {
                 Text(t("settings.history.section"))
             } footer: {
                 Text(t("settings.history.footer"))
+                    .font(.App.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle(t("settings.updates.automatic"),
+                       isOn: $updater.automaticallyChecksForUpdates)
+                Button(t("menu.checkForUpdates")) { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            } header: {
+                Text(t("settings.updates.section"))
+            } footer: {
+                Text(t("settings.updates.footer", updater.currentVersion))
                     .font(.App.caption)
                     .foregroundStyle(.secondary)
             }

@@ -49,12 +49,18 @@ struct ExportAction: Equatable {
 /// consistently uses them, and verbs read better without one.
 struct AppCommands: Commands {
     let model: SubtitleModel
+    let updater: AppUpdater
 
     @FocusedValue(\.subtitleActions) private var actions
     @FocusedValue(\.mainPane) private var pane
     @FocusedValue(\.exportSession) private var exportSession
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button(t("menu.checkForUpdates")) { updater.checkForUpdates() }
+                .disabled(!updater.canCheckForUpdates)
+        }
+
         CommandGroup(replacing: .importExport) {
             Button(t("export.menu")) { exportSession?.perform() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
