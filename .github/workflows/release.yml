@@ -1,6 +1,7 @@
 name: Release
 
-# 推送 v* 标签：测试 → 签名、公证、发布 GitHub Release → 同步 Homebrew cask。
+# 推送 v* 标签：测试 → 签名、公证、发布 GitHub Release → 同步 Homebrew cask，
+# 并重新部署 Pages，让 Sparkle 的 appcast.xml 列出新版本。
 # 在分支上手动触发时只做签名公证构建（产物见 workflow run），不发布。
 on:
   push:
@@ -30,6 +31,13 @@ jobs:
       build-command: ./scripts/build-app.sh
       artifact-basename: LiveTranslateBridge
       entitlements: LiveTranslateBridge/LiveTranslateBridge.entitlements
+      # Sparkle 的嵌套代码，由内向外先签；XPCServices 已在 build-app.sh 中去掉。
+      inner-binaries: |
+        Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate
+        Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app
+        Contents/Frameworks/Sparkle.framework
+      # 给 zip 做 EdDSA 签名并发布 .zip.sparkle.json，供 appcast 使用。
+      sparkle: true
       make-dmg: true
       dmg-volume-name: Live Translate Bridge
       # Release 说明取自 docs/releases/<标签>.md，与 CHANGELOG 同步维护；
@@ -47,3 +55,14 @@ jobs:
       artifact-basename: LiveTranslateBridge
       version: ${{ needs.release.outputs.version }}
     secrets: inherit
+
+  # 用 GITHUB_TOKEN 发布的 Release 不会触发 pages.yml 的 release 事件，
+  # 所以发版后在这里直接调用一次，重新生成 appcast.xml。
+  pages:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml

@@ -7,6 +7,8 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  # release.yml 发版后调用，更新 appcast.xml。
+  workflow_call:
 
 permissions:
   contents: read
@@ -37,6 +39,12 @@ jobs:
           cp LiveTranslateBridge/Assets.xcassets/AppIcon.appiconset/AppIcon-256.png _site/icon.png
           version=$(gh release view --json tagName --jq '.tagName | ltrimstr("v")')
           sed -i "s/__VERSION__/${version}/g" _site/index.html
+      # Sparkle 的更新源，从 GitHub Releases 生成，不进版本库。
+      - uses: hoobnn/ci-workflows/.github/actions/sparkle-appcast@v1
+        with:
+          output: _site/appcast.xml
+          artifact-basename: LiveTranslateBridge
+          title: Live Translate Bridge
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
