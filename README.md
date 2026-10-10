@@ -133,4 +133,4 @@ open LiveTranslateBridge.xcodeproj    # 在 Xcode 里运行
 
 ## 许可证
 
-[MIT](LICENSE)
+[MIT](LICENSE) © 2026 hoobnn。可自由使用、修改和分发，需保留版权声明。
