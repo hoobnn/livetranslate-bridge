@@ -4,6 +4,14 @@
 
 每个版本发布时，同一段内容会整理成 `docs/releases/v<版本>.md`，由 CI 作为 GitHub Release 的说明。
 
+## [未发布]
+
+## [1.1.1] - 2026-10-10
+
+### 变更
+
+- **产品名统一为 LiveTranslate Bridge**：英文界面的应用名、主窗口标题、安装镜像卷名和项目主页统一使用这一写法。
+
 ## [1.1.0] - 2026-10-09
 
 ### 新增
@@ -46,5 +54,7 @@
 - 流式文字只刷新正在输入的那一条字幕，不再让整块字幕板重绘。
 - 上行音频按字节控制积压，网络抖动时不再越积越多。
 
-[未发布]: https://github.com/hoobnn/livetranslate-bridge/compare/v1.0.0...HEAD
+[未发布]: https://github.com/hoobnn/livetranslate-bridge/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/hoobnn/livetranslate-bridge/releases/tag/v1.1.1
+[1.1.0]: https://github.com/hoobnn/livetranslate-bridge/releases/tag/v1.1.0
 [1.0.0]: https://github.com/hoobnn/livetranslate-bridge/releases/tag/v1.0.0
