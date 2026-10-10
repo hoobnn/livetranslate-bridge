@@ -7,7 +7,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Live Translate Bridge"
+            "value" : "LiveTranslate Bridge"
           }
         },
         "zh-Hans" : {
@@ -1242,7 +1242,7 @@
         }
       }
     },
-    "LiveTranslateBridge" : {
+    "LiveTranslate Bridge" : {
 
     },
     "log.category.audio" : {

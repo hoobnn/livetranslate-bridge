@@ -34,7 +34,7 @@ struct LiveTranslateBridgeApp: App {
     @State private var updater = AppUpdater.shared
 
     var body: some Scene {
-        Window("LiveTranslateBridge", id: "main") {
+        Window("LiveTranslate Bridge", id: "main") {
             ContentView(model: model)
                 .localized(localization)
                 // A board with entries on it needs credentials and a live

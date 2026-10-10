@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="LiveTranslateBridge/Assets.xcassets/AppIcon.appiconset/AppIcon-256.png" width="112" alt="LiveTranslateBridge 应用图标">
+<img src="LiveTranslateBridge/Assets.xcassets/AppIcon.appiconset/AppIcon-256.png" width="112" alt="LiveTranslate Bridge 应用图标">
 
-# LiveTranslateBridge
+# LiveTranslate Bridge
 
 macOS 实时语音翻译与双语字幕工具，适用于通话、会议和任意 App 的音频。
 
@@ -15,13 +15,13 @@ macOS 实时语音翻译与双语字幕工具，适用于通话、会议和任�
 
 </div>
 
-LiveTranslateBridge 是一款开源的 macOS App。它同时采集指定应用的声音（在 Mac 上接听的 iPhone 来电、视频会议、浏览器、播放器）和麦克风，通过阿里云百炼的 Qwen 实时翻译模型（qwen3.8 LiveTranslate）生成双向字幕，并可将译文语音播报。原声和译声分别输出到指定设备，音量独立调节。
+LiveTranslate Bridge 是一款开源的 macOS App。它同时采集指定应用的声音（在 Mac 上接听的 iPhone 来电、视频会议、浏览器、播放器）和麦克风，通过阿里云百炼的 Qwen 实时翻译模型（qwen3.8 LiveTranslate）生成双向字幕，并可将译文语音播报。原声和译声分别输出到指定设备，音量独立调节。
 
 典型场景：对方说英语，你看到中文字幕、听到中文译声；你说中文，对方听到英语译声。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/product/app-subtitles-dark.jpg">
-  <img src="docs/assets/product/app-subtitles-light.jpg" alt="LiveTranslateBridge macOS 实时翻译界面：中英文双向字幕左右分栏显示">
+  <img src="docs/assets/product/app-subtitles-light.jpg" alt="LiveTranslate Bridge macOS 实时翻译界面：中英文双向字幕左右分栏显示">
 </picture>
 
 <sub>截图为 App 内置的示例字幕，并非真实通话，会随 GitHub 的深浅色主题切换。</sub>

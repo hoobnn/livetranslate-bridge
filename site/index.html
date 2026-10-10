@@ -3,19 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LiveTranslateBridge：macOS 实时语音翻译与双语字幕</title>
-<meta name="description" content="LiveTranslateBridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。">
+<title>LiveTranslate Bridge：macOS 实时语音翻译与双语字幕</title>
+<meta name="description" content="LiveTranslate Bridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。">
 <link rel="canonical" href="https://hoobnn.github.io/livetranslate-bridge/">
 <link rel="icon" href="icon.png">
 <meta property="og:type" content="website">
-<meta property="og:title" content="LiveTranslateBridge：macOS 实时语音翻译与双语字幕">
-<meta property="og:description" content="LiveTranslateBridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。">
+<meta property="og:title" content="LiveTranslate Bridge：macOS 实时语音翻译与双语字幕">
+<meta property="og:description" content="LiveTranslate Bridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。">
 <meta property="og:url" content="https://hoobnn.github.io/livetranslate-bridge/">
 <meta property="og:image" content="https://hoobnn.github.io/livetranslate-bridge/social-preview.jpg">
 <meta property="og:locale" content="zh_CN">
 <meta property="og:locale:alternate" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "LiveTranslateBridge", "operatingSystem": "macOS 27+", "applicationCategory": "UtilitiesApplication", "description": "LiveTranslateBridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。", "url": "https://hoobnn.github.io/livetranslate-bridge/", "downloadUrl": "https://github.com/hoobnn/livetranslate-bridge/releases/latest", "softwareVersion": "__VERSION__", "license": "https://opensource.org/licenses/MIT", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "image": "https://hoobnn.github.io/livetranslate-bridge/social-preview.jpg", "author": {"@type": "Person", "name": "hoobnn", "url": "https://github.com/hoobnn"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "LiveTranslate Bridge", "operatingSystem": "macOS 27+", "applicationCategory": "UtilitiesApplication", "description": "LiveTranslate Bridge 是开源的 macOS 实时翻译工具：采集通话、会议或任意 App 的声音和你的麦克风，出中英等 8 种语言的双向字幕，也能把译文念出来。基于阿里云百炼 Qwen LiveTranslate。", "url": "https://hoobnn.github.io/livetranslate-bridge/", "downloadUrl": "https://github.com/hoobnn/livetranslate-bridge/releases/latest", "softwareVersion": "__VERSION__", "license": "https://opensource.org/licenses/MIT", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "image": "https://hoobnn.github.io/livetranslate-bridge/social-preview.jpg", "author": {"@type": "Person", "name": "hoobnn", "url": "https://github.com/hoobnn"}}</script>
 <style>
 :root{--bg:#fbfaf7;--fg:#1d1d1f;--mut:#6e6e73;--card:#fff;--line:rgba(0,0,0,.09);--acc:#1d63ed;--code:#f2f1ed}
 @media (prefers-color-scheme:dark){:root{--bg:#111214;--fg:#f2f2f4;--mut:#a1a1a8;--card:#1b1c1f;--line:rgba(255,255,255,.1);--code:#1f2023}}
@@ -39,13 +39,13 @@ a{color:var(--acc)}footer{color:var(--mut);font-size:14px;border-top:1px solid v
 <body>
 <main>
 <header>
-<img class="icon" src="icon.png" alt="LiveTranslateBridge 图标" width="104" height="104">
-<h1>LiveTranslateBridge<small>macOS 实时语音翻译与双语字幕</small></h1>
+<img class="icon" src="icon.png" alt="LiveTranslate Bridge 图标" width="104" height="104">
+<h1>LiveTranslate Bridge<small>macOS 实时语音翻译与双语字幕</small></h1>
 <div class="btns"><a class="btn p" href="https://github.com/hoobnn/livetranslate-bridge/releases/latest">下载 DMG</a><a class="btn" href="https://github.com/hoobnn/livetranslate-bridge">GitHub</a><a class="btn" href="#en" hreflang="en">English</a></div>
 <div class="meta">macOS 27 及以上 · Apple Silicon · 免费开源（MIT） · 当前版本 __VERSION__</div>
 </header>
 
-<div class="shots"><picture><source media="(prefers-color-scheme: dark)" srcset="app-subtitles-dark.jpg"><img src="app-subtitles-light.jpg" alt="LiveTranslateBridge 实时翻译界面：中英文双向字幕左右分栏" loading="lazy"></picture></div>
+<div class="shots"><picture><source media="(prefers-color-scheme: dark)" srcset="app-subtitles-dark.jpg"><img src="app-subtitles-light.jpg" alt="LiveTranslate Bridge 实时翻译界面：中英文双向字幕左右分栏" loading="lazy"></picture></div>
 <p>它同时采集某个应用的声音（Mac 上接的 iPhone 电话、视频会议、浏览器、播放器）和你的麦克风，交给阿里云百炼的 Qwen 实时翻译模型，出双向字幕，也可以把译文念出来。对方说英语，你看到中文字幕、听到中文；你说中文，对方听到的是英语。</p>
 <h2>安装</h2>
 <pre><code>brew install --cask hoobnn/tap/livetranslate-bridge</code></pre>
@@ -77,7 +77,7 @@ a{color:var(--acc)}footer{color:var(--mut);font-size:14px;border-top:1px solid v
 <section id="en" lang="en">
 
 <h2>Real-time speech translation and bilingual subtitles for macOS</h2>
-<p>LiveTranslateBridge captures one app's audio (an iPhone call answered on your Mac, a meeting app, a browser) plus your microphone, sends both to Alibaba Cloud's Qwen LiveTranslate model under your own account, and shows two-way subtitles. It can also speak the translation, routed to whichever output device you choose. Free and open source (MIT), macOS 27+ on Apple Silicon.</p>
+<p>LiveTranslate Bridge captures one app's audio (an iPhone call answered on your Mac, a meeting app, a browser) plus your microphone, sends both to Alibaba Cloud's Qwen LiveTranslate model under your own account, and shows two-way subtitles. It can also speak the translation, routed to whichever output device you choose. Free and open source (MIT), macOS 27+ on Apple Silicon.</p>
 <pre><code>brew install --cask hoobnn/tap/livetranslate-bridge</code></pre>
 <ul>
 <li>8 languages: Chinese, English, Japanese, Korean, French, German, Spanish, Russian.</li>
@@ -88,7 +88,7 @@ a{color:var(--acc)}footer{color:var(--mut);font-size:14px;border-top:1px solid v
 <p>Full documentation is in the <a href="https://github.com/hoobnn/livetranslate-bridge/blob/main/README.en.md">English README</a>.</p>
 
 </section>
-<footer>LiveTranslateBridge 由 <a href="https://github.com/hoobnn">hoobnn</a> 开发。<a href="https://github.com/hoobnn/livetranslate-bridge">源代码</a> · <a href="https://github.com/hoobnn/livetranslate-bridge/issues">反馈问题</a> · MIT License</footer>
+<footer>LiveTranslate Bridge 由 <a href="https://github.com/hoobnn">hoobnn</a> 开发。<a href="https://github.com/hoobnn/livetranslate-bridge">源代码</a> · <a href="https://github.com/hoobnn/livetranslate-bridge/issues">反馈问题</a> · MIT License</footer>
 </main>
 </body>
 </html>

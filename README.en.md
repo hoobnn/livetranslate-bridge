@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="LiveTranslateBridge/Assets.xcassets/AppIcon.appiconset/AppIcon-256.png" width="112" alt="LiveTranslateBridge app icon">
+<img src="LiveTranslateBridge/Assets.xcassets/AppIcon.appiconset/AppIcon-256.png" width="112" alt="LiveTranslate Bridge app icon">
 
-# LiveTranslateBridge
+# LiveTranslate Bridge
 
 Live speech translation and bilingual subtitles for macOS. Calls, meetings, anything playing in a browser — translated while you listen.
 
@@ -15,13 +15,13 @@ Live speech translation and bilingual subtitles for macOS. Calls, meetings, anyt
 
 </div>
 
-LiveTranslateBridge is an open-source macOS app. It captures one app's audio (an iPhone call answered on your Mac, a video meeting, a browser, a media player) along with your microphone, sends both to Alibaba Cloud's Qwen real-time translation model (qwen3.8 LiveTranslate), and gives you subtitles in both directions, plus spoken translations if you want them. Original and translated audio go to the output devices you pick, each at its own volume.
+LiveTranslate Bridge is an open-source macOS app. It captures one app's audio (an iPhone call answered on your Mac, a video meeting, a browser, a media player) along with your microphone, sends both to Alibaba Cloud's Qwen real-time translation model (qwen3.8 LiveTranslate), and gives you subtitles in both directions, plus spoken translations if you want them. Original and translated audio go to the output devices you pick, each at its own volume.
 
 For example: the other person speaks English, you read and hear Chinese; you speak Chinese, they hear English.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/product/app-subtitles-dark.jpg">
-  <img src="docs/assets/product/app-subtitles-light.jpg" alt="LiveTranslateBridge macOS live translation window with Chinese and English two-way subtitles in side-by-side columns">
+  <img src="docs/assets/product/app-subtitles-light.jpg" alt="LiveTranslate Bridge macOS live translation window with Chinese and English two-way subtitles in side-by-side columns">
 </picture>
 
 <sub>This is the app's built-in sample subtitle preview, not a real call. It follows GitHub's light/dark theme.</sub>
@@ -81,7 +81,7 @@ You need a loopback audio device such as [BlackHole](https://existential.audio/b
 
 1. Set the "What others hear" output to the loopback device.
 2. In the meeting or call app, set the input to the same loopback device.
-3. Keep a real microphone as LiveTranslateBridge's input. Otherwise the app picks up its own translated voice.
+3. Keep a real microphone as LiveTranslate Bridge's input. Otherwise the app picks up its own translated voice.
 
 ## FAQ
 

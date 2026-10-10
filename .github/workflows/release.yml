@@ -39,7 +39,7 @@ jobs:
       # 给 zip 做 EdDSA 签名并发布 .zip.sparkle.json，供 appcast 使用。
       sparkle: true
       make-dmg: true
-      dmg-volume-name: Live Translate Bridge
+      dmg-volume-name: LiveTranslate Bridge
       # Release 说明取自 docs/releases/<标签>.md，与 CHANGELOG 同步维护；
       # 缺失时回退为 GitHub 自动生成。只在首次创建 Release 时生效。
       release-notes-file: docs/releases/${{ github.ref_name }}.md

@@ -1,10 +1,10 @@
 # Security Policy · 安全策略
 
-LiveTranslateBridge captures app and microphone audio, stores your Model Studio
+LiveTranslate Bridge captures app and microphone audio, stores your Model Studio
 API key in the login keychain and streams audio to Alibaba Cloud. Problems that
 could leak credentials, audio or transcripts should be reported privately.
 
-LiveTranslateBridge 会采集应用与麦克风声音，把 Model Studio 密钥存在登录钥匙串，
+LiveTranslate Bridge 会采集应用与麦克风声音，把 Model Studio 密钥存在登录钥匙串，
 并把音频发送到阿里云。可能泄露密钥、音频或字幕内容的问题，请私下报告。
 
 ## Reporting a vulnerability · 报告漏洞

@@ -44,7 +44,7 @@ jobs:
         with:
           output: _site/appcast.xml
           artifact-basename: LiveTranslateBridge
-          title: Live Translate Bridge
+          title: LiveTranslate Bridge
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
