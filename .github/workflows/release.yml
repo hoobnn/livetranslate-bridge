@@ -31,11 +31,9 @@ jobs:
       build-command: ./scripts/build-app.sh
       artifact-basename: LiveTranslateBridge
       entitlements: LiveTranslateBridge/LiveTranslateBridge.entitlements
-      # Sparkle 的嵌套代码，由内向外先签；XPCServices 已在 build-app.sh 中去掉。
-      inner-binaries: |
-        Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate
-        Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app
-        Contents/Frameworks/Sparkle.framework
+      # 自动找出 Sparkle 的嵌套代码（Autoupdate、Updater.app 和 framework），由内向外先签，
+      # 升级 Sparkle 不用再改清单；XPCServices 已在 build-app.sh 中去掉。
+      inner-binaries: auto
       # 给 zip 做 EdDSA 签名并发布 .zip.sparkle.json，供 appcast 使用。
       sparkle: true
       make-dmg: true
