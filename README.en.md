@@ -85,6 +85,14 @@ You can switch to Volcengine's [Doubao Simultaneous Interpretation 2.0](https://
 
 Doubao translates between Chinese, English, Japanese, French, German and Spanish; Korean and Russian aren't supported. When debugging, `DOUBAO_APP_ID`, `DOUBAO_ACCESS_TOKEN` (or `DOUBAO_API_KEY`) and `DOUBAO_SPEAKER_ID` override the keychain.
 
+### AI agent
+
+With the agent on, an AI answers the call from reference material you provide, in the other side's language and in your voice, while the board shows both sides with translations. Speak or press Take Over at any time to step in; your words are still translated, in the same voice. Hand Back lets the AI carry on, remembering what you said.
+
+1. Settings › AI agent: set a chat model (Volcengine Ark by default; any OpenAI-compatible `chat/completions` service works) and a voice clone ID (starts with S_, from Voice Cloning in the Doubao Speech console), then upload 10–30 seconds of yourself speaking to train it.
+2. In Settings › Credentials, switch to Doubao and enter Doubao Speech credentials.
+3. On the board, open AI agent, write the goal and the material, turn on "Let the AI hold this call", and start the session. A "What others hear" output device is required (see below).
+
 ## Sending translated speech into a meeting or call
 
 You need a loopback audio device such as [BlackHole](https://existential.audio/blackhole/):

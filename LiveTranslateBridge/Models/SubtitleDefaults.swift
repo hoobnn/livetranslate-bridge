@@ -23,6 +23,9 @@ extension SubtitleModel {
         private static let theirsKey = "sourceLanguage"
         private static let regionKey = "translationRegion"
         private static let providerKey = "translationProvider"
+        private static let agentEnabledKey = "agentEnabled"
+        private static let agentMaterialsKey = "agentMaterials"
+        private static let agentGoalKey = "agentGoal"
         private static let deviceKey = "translationOutputDeviceUID"
         private static let inputKey = "uplinkInputDeviceUID"
         private static let cloneKey = "clonesVoice"
@@ -106,6 +109,21 @@ extension SubtitleModel {
                     .flatMap(TranslationProvider.init(rawValue:)) ?? .qwen
             }
             set { store.set(newValue.rawValue, forKey: providerKey) }
+        }
+
+        static var agentEnabled: Bool {
+            get { store.bool(forKey: agentEnabledKey) }
+            set { store.set(newValue, forKey: agentEnabledKey) }
+        }
+
+        static var agentMaterials: String {
+            get { store.string(forKey: agentMaterialsKey) ?? "" }
+            set { store.set(newValue, forKey: agentMaterialsKey) }
+        }
+
+        static var agentGoal: String {
+            get { store.string(forKey: agentGoalKey) ?? "" }
+            set { store.set(newValue, forKey: agentGoalKey) }
         }
 
         static var outputDeviceUID: String {

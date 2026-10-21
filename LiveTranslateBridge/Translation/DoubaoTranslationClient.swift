@@ -200,7 +200,10 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         if config.appID.isEmpty {
             request.setValue(config.accessToken, forHTTPHeaderField: "X-Api-Key")
         } else {
+            // The speech products disagree on the App ID header's name; the
+            // one a product does not use is ignored.
             request.setValue(config.appID, forHTTPHeaderField: "X-Api-App-Key")
+            request.setValue(config.appID, forHTTPHeaderField: "X-Api-App-Id")
             request.setValue(config.accessToken, forHTTPHeaderField: "X-Api-Access-Key")
         }
         request.setValue(config.resourceID, forHTTPHeaderField: "X-Api-Resource-Id")

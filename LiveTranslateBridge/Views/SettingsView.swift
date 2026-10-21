@@ -22,6 +22,9 @@ struct SettingsView: View {
             Tab(t("settings.tab.translation"), systemImage: "character.bubble") {
                 TranslationSettings(model: model)
             }
+            Tab(t("agent.title"), systemImage: "person.wave.2") {
+                AgentSettings()
+            }
         }
         .frame(width: 580, height: 560)
         .scenePadding(.top)

@@ -80,8 +80,30 @@ nonisolated struct CredentialStore {
         /// A stock speaker for when voice cloning is off. Empty lets the
         /// service decide.
         var speakerID: String = ""
+        /// A voice trained from the user's own sample (`S_…`, from the
+        /// console's voice cloning). When set, both the AI agent and the
+        /// user's own translated speech use it, so taking over a call never
+        /// changes how "you" sound.
+        var cloneSpeakerID: String = ""
 
         var isComplete: Bool { !accessToken.isEmpty }
+
+        init(appID: String, accessToken: String, speakerID: String = "",
+             cloneSpeakerID: String = "") {
+            self.appID = appID
+            self.accessToken = accessToken
+            self.speakerID = speakerID
+            self.cloneSpeakerID = cloneSpeakerID
+        }
+
+        /// Tolerates items saved before a field existed.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            appID = try container.decodeIfPresent(String.self, forKey: .appID) ?? ""
+            accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken) ?? ""
+            speakerID = try container.decodeIfPresent(String.self, forKey: .speakerID) ?? ""
+            cloneSpeakerID = try container.decodeIfPresent(String.self, forKey: .cloneSpeakerID) ?? ""
+        }
     }
 
     private static let doubaoService = "com.ikuyu.livetranslate-bridge.doubao"
@@ -92,7 +114,8 @@ nonisolated struct CredentialStore {
            !token.isEmpty {
             return DoubaoCredentials(appID: environment["DOUBAO_APP_ID"] ?? "",
                                      accessToken: token,
-                                     speakerID: environment["DOUBAO_SPEAKER_ID"] ?? "")
+                                     speakerID: environment["DOUBAO_SPEAKER_ID"] ?? "",
+                                     cloneSpeakerID: environment["DOUBAO_CLONE_SPEAKER_ID"] ?? "")
         }
         guard let data = read(service: doubaoService),
               let decoded = try? JSONDecoder().decode(DoubaoCredentials.self, from: data)
@@ -108,6 +131,46 @@ nonisolated struct CredentialStore {
 
     @discardableResult
     static func clearDoubao() -> Bool { delete(service: doubaoService) }
+
+    // MARK: - AI agent
+
+    /// An OpenAI-compatible chat completions endpoint for the call agent.
+    /// Defaults to Volcengine Ark, where Doubao's chat models live.
+    struct AgentCredentials: Sendable, Equatable, Codable {
+        static let defaultBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
+
+        var baseURL: String = AgentCredentials.defaultBaseURL
+        var apiKey: String = ""
+        /// A model name, or an Ark endpoint ID (`ep-…`).
+        var model: String = ""
+
+        var isComplete: Bool { !apiKey.isEmpty && !model.isEmpty && URL(string: baseURL) != nil }
+    }
+
+    private static let agentService = "com.ikuyu.livetranslate-bridge.agent"
+
+    static func loadAgent() -> AgentCredentials {
+        let environment = ProcessInfo.processInfo.environment
+        if let key = environment["AGENT_API_KEY"], !key.isEmpty {
+            return AgentCredentials(
+                baseURL: environment["AGENT_BASE_URL"] ?? AgentCredentials.defaultBaseURL,
+                apiKey: key, model: environment["AGENT_MODEL"] ?? ""
+            )
+        }
+        guard let data = read(service: agentService),
+              let decoded = try? JSONDecoder().decode(AgentCredentials.self, from: data)
+        else { return AgentCredentials() }
+        return decoded
+    }
+
+    @discardableResult
+    static func saveAgent(_ credentials: AgentCredentials) -> Bool {
+        guard let data = try? JSONEncoder().encode(credentials) else { return false }
+        return write(data, service: agentService)
+    }
+
+    @discardableResult
+    static func clearAgent() -> Bool { delete(service: agentService) }
 
     // MARK: - keychain
 
