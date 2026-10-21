@@ -785,9 +785,17 @@ final class SubtitleModel {
         didSet { Defaults.agentGoal = agentGoal }
     }
 
-    /// Whether the chosen provider handles both languages of the pair.
+    /// Whether the chosen provider handles the languages this session uses.
+    ///
+    /// Transcribing, only the captured sides' languages matter; translating,
+    /// both do, and the provider may also restrict which pairs it offers.
     var providerSupportsLanguages: Bool {
-        provider.supports(myLanguage) && provider.supports(theirLanguage)
+        guard translates else {
+            return (!scope.captures(.remote) || provider.supports(theirLanguage))
+                && (!scope.captures(.local) || provider.supports(myLanguage))
+        }
+        return provider.supports(myLanguage) && provider.supports(theirLanguage)
+            && provider.supportsPair(myLanguage, theirLanguage)
     }
 
     /// Term overrides, one "source = target" pair per line. A session

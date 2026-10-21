@@ -58,6 +58,7 @@ struct DoubaoProtocolTests {
         #expect(string(params[3]?.first) == "en")
         // No speaker: the service clones the voice.
         #expect(params[4] == nil)
+        #expect(params[6] == nil)
         let corpus = try fields(bytes(params[100]?.first)!)
         let entry = try fields(bytes(corpus[10]?.first)!)
         #expect(string(entry[1]?.first) == "豆包")
@@ -142,11 +143,27 @@ struct DoubaoConfigTests {
         let start = config(voice: .cloned(id: "S_abc")).startSession(id: "s")
         #expect(start.speakerID == "S_abc")
         #expect(start.isCustomSpeaker)
+        #expect(start.ttsResourceID == DoubaoTranslationClient.cloneResourceID)
     }
 
     @Test func presetUsesTheConfiguredSpeaker() {
         let start = config(voice: .preset, preset: "zh_female_vv").startSession(id: "s")
         #expect(start.speakerID == "zh_female_vv")
+        #expect(start.ttsResourceID == DoubaoTranslationClient.presetResourceID)
+    }
+
+    @Test func cloningOffNeverFallsThroughToCloning() {
+        // An empty speaker is the wire form of "clone the voice".
+        let start = config(voice: .preset).startSession(id: "s")
+        #expect(start.speakerID == DoubaoTranslationClient.defaultSpeakerID)
+        #expect(!start.isCustomSpeaker)
+    }
+
+    @Test func pairsMustPivotOnChineseOrEnglish() {
+        #expect(TranslationProvider.doubao.supportsPair("fr", "en"))
+        #expect(TranslationProvider.doubao.supportsPair("zh", "ja"))
+        #expect(!TranslationProvider.doubao.supportsPair("fr", "de"))
+        #expect(TranslationProvider.qwen.supportsPair("fr", "de"))
     }
 
     @Test func textOnlyNeverSpeaks() {

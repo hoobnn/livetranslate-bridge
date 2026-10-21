@@ -54,4 +54,13 @@ nonisolated enum TranslationProvider: String, CaseIterable, Identifiable, Sendab
         case .doubao: DoubaoTranslationClient.supportedLanguages.contains(code)
         }
     }
+
+    /// Whether the provider translates between these two. Doubao pivots on
+    /// Chinese or English: one side of every pair must be one of them.
+    func supportsPair(_ first: String, _ second: String) -> Bool {
+        switch self {
+        case .qwen: true
+        case .doubao: ["zh", "en"].contains(first) || ["zh", "en"].contains(second)
+        }
+    }
 }

@@ -77,6 +77,9 @@ nonisolated enum DoubaoProtocol {
         /// Empty lets the service clone the speaker's own voice.
         var speakerID: String = ""
         var isCustomSpeaker = false
+        /// Which synthesis resource `speakerID` belongs to. Empty with no
+        /// speaker, where the service clones.
+        var ttsResourceID = ""
         /// Source term → preferred translation.
         var glossary: [String: String] = [:]
     }
@@ -102,6 +105,7 @@ nonisolated enum DoubaoProtocol {
         params.string(3, start.targetLanguage)
         params.string(4, start.speakerID)
         if start.isCustomSpeaker { params.bool(5, true) }
+        params.string(6, start.ttsResourceID)
         if !start.glossary.isEmpty {
             var corpus = Writer()
             // Sorted so the same glossary always encodes to the same bytes,

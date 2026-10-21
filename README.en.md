@@ -81,9 +81,9 @@ You can switch to Volcengine's [Doubao Simultaneous Interpretation 2.0](https://
 
 1. Enable Simultaneous Interpretation 2.0 in the [Doubao Speech console](https://console.volcengine.com/speech/app).
 2. In Settings › Credentials, set Translation service to "Volcengine · Doubao Simultaneous Interpretation 2.0". The classic console gives an App ID and Access Token; the new console gives a single API key, so leave App ID empty.
-3. With voice cloning on, translations are spoken in each speaker's own voice; with it off, the preset voice ID you enter is used (empty lets the service choose).
+3. With voice cloning on, translations are spoken in each speaker's own voice; with it off, the preset voice ID you enter is used (empty uses a default multilingual voice).
 
-Doubao translates between Chinese, English, Japanese, French, German and Spanish; Korean and Russian aren't supported. When debugging, `DOUBAO_APP_ID`, `DOUBAO_ACCESS_TOKEN` (or `DOUBAO_API_KEY`) and `DOUBAO_SPEAKER_ID` override the keychain.
+Doubao translates between Chinese, English, Japanese, French, German and Spanish, with Chinese or English on one side; Korean and Russian aren't supported. When debugging, `DOUBAO_APP_ID`, `DOUBAO_ACCESS_TOKEN` (or `DOUBAO_API_KEY`) and `DOUBAO_SPEAKER_ID` override the keychain.
 
 ### AI agent
 

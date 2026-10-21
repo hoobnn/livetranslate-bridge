@@ -292,7 +292,9 @@ final class DiagnosticsModel {
         let credentials = CredentialStore.load(for: model.provider)
         guard credentials.isComplete else {
             fileLines = [FileLine(kind: .status,
-                                  text: t("diagnostics.file.noCredentials"),
+                                  text: t(model.provider == .doubao
+                                      ? "error.noDoubaoCredentials"
+                                      : "diagnostics.file.noCredentials"),
                                   isError: true)]
             return
         }

@@ -445,7 +445,8 @@ private struct SegmentationSettings: View {
 
     var body: some View {
         Section {
-            Text(t("settings.segmentation.models"))
+            Text(t(model.provider == .doubao
+                   ? "settings.segmentation.doubao" : "settings.segmentation.models"))
                 .font(.App.caption)
                 .foregroundStyle(.secondary)
         } header: {

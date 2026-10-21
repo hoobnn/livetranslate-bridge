@@ -1894,13 +1894,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The selected translation service doesn't support one of these languages. Doubao supports Chinese, English, Japanese, French, German and Spanish."
+            "value" : "The selected translation service doesn't support this language pair. Doubao supports Chinese, English, Japanese, French, German and Spanish, and one side must be Chinese or English."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前翻译服务不支持所选语言。豆包同声传译支持中文、英语、日语、法语、德语和西班牙语。"
+            "value" : "当前翻译服务不支持所选语言。豆包同声传译支持中文、英语、日语、法语、德语和西班牙语，且其中一方必须是中文或英语。"
           }
         }
       }
@@ -3036,13 +3036,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "With voice cloning on, translations are spoken in the speaker's own voice. With it off, the preset voice ID here is used; leave it empty to let the service choose."
+            "value" : "With voice cloning on, translations are spoken in the speaker's own voice. With it off, the preset voice ID here is used; leave it empty for a default multilingual voice."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "打开“克隆声音”时，译文用说话人自己的音色播放；关闭时用这里填的音色 ID，留空则由服务决定。"
+            "value" : "打开“克隆声音”时，译文用说话人自己的音色播放；关闭时用这里填的音色 ID，留空则用默认的多语种音色。"
           }
         }
       }
@@ -3213,6 +3213,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "阿里云百炼 · Qwen LiveTranslate"
+          }
+        }
+      }
+    },
+    "settings.segmentation.doubao" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Translation and voice cloning both use Doubao Simultaneous Interpretation 2.0. The service splits source and translation into sentences; subtitles keep updating until each sentence ends."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译和音色复刻均使用豆包同声传译 2.0。由服务端按句切分原文与译文，字幕在一句结束前持续更新。"
           }
         }
       }

@@ -81,9 +81,9 @@ App 通过 [Sparkle](https://sparkle-project.org/) 自动检查新版本，发�
 
 1. 在[豆包语音控制台](https://console.volcengine.com/speech/app)开通「同声传译 2.0」。
 2. 设置 › 凭据 中把「翻译服务」切换为「火山引擎 · 豆包同声传译 2.0」。旧版控制台填 App ID 和 Access Token；新版控制台只填 API Key，App ID 留空。
-3. 打开「克隆声音」后，译文用说话人自己的音色播放；关闭时使用填写的预置音色 ID（留空由服务决定）。
+3. 打开「克隆声音」后，译文用说话人自己的音色播放；关闭时使用填写的预置音色 ID（留空则用默认的多语种音色）。
 
-豆包支持中文、英语、日语、法语、德语、西班牙语之间互译，不支持韩语和俄语。调试时可用环境变量 `DOUBAO_APP_ID`、`DOUBAO_ACCESS_TOKEN`（或 `DOUBAO_API_KEY`）、`DOUBAO_SPEAKER_ID` 覆盖钥匙串中的凭据。
+豆包支持中文、英语、日语、法语、德语、西班牙语之间互译（其中一方须为中文或英语），不支持韩语和俄语。调试时可用环境变量 `DOUBAO_APP_ID`、`DOUBAO_ACCESS_TOKEN`（或 `DOUBAO_API_KEY`）、`DOUBAO_SPEAKER_ID` 覆盖钥匙串中的凭据。
 
 ### AI 代聊
 

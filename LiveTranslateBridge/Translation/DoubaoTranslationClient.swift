@@ -38,8 +38,9 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         var wantsAudio: Bool
         var phrases: [String: String] = [:]
         var voice: TranslationClient.Config.Voice = .preset
-        /// A stock speaker for `.preset`. Empty leaves the choice to the
-        /// service, which clones the speaker.
+        /// A stock speaker for `.preset`. Empty uses `defaultSpeakerID`:
+        /// leaving the speaker out would make the service clone the voice,
+        /// which is exactly what turning cloning off asks it not to do.
         var presetSpeakerID: String = ""
 
         var mode: DoubaoProtocol.Mode {
@@ -65,12 +66,15 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
                 case .cloned(let id):
                     start.speakerID = id
                     start.isCustomSpeaker = true
+                    start.ttsResourceID = DoubaoTranslationClient.cloneResourceID
                 case .cloneOnce, .cloneEachReply:
                     // No speaker: the service clones whoever is talking,
                     // continuously, which covers both frequencies.
                     break
                 case .preset:
-                    start.speakerID = presetSpeakerID
+                    start.speakerID = presetSpeakerID.isEmpty
+                        ? DoubaoTranslationClient.defaultSpeakerID : presetSpeakerID
+                    start.ttsResourceID = DoubaoTranslationClient.presetResourceID
                 }
             }
             return start
@@ -79,6 +83,11 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
 
     static let url = URL(string: "wss://openspeech.bytedance.com/api/v4/ast/v2/translate")!
     static let resourceID = "volc.service_type.10053"
+    /// Synthesis resources for a stock speaker and for a trained `S_` voice.
+    static let presetResourceID = "seed-tts-2.0"
+    static let cloneResourceID = "seed-icl-2.0"
+    /// A multilingual stock voice, for when cloning is off and none is set.
+    static let defaultSpeakerID = "zh_female_vv_uranus_bigtts"
 
     /// Languages Seed LiveInterpret 2.0 translates between, among the ones
     /// the app offers. Korean and Russian are not among them.
