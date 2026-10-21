@@ -88,10 +88,14 @@ final class CallAgent {
 
     /// Starts a call. Replies only after the far end speaks first, which is
     /// how a call one answers goes; use `speakFirst` to open it instead.
-    func begin(_ config: Config) {
+    /// `resuming` keeps what was said so far, for a session rebuilt mid-call
+    /// (an audio device came back, say) that is still the same conversation.
+    func begin(_ config: Config, resuming: Bool = false) {
         self.config = config
-        history = []
-        unanswered = []
+        if !resuming {
+            history = []
+            unanswered = []
+        }
         lastLocal = nil
         generation &+= 1
         phase = .listening
@@ -120,10 +124,17 @@ final class CallAgent {
 
     /// The far end started a sentence. A reply still being written answers
     /// what they said before it, so it is thrown away and rewritten once
-    /// they finish.
+    /// they finish; one being spoken stops, rather than talk over them.
     func noteRemoteSpeechStarted() {
-        guard phase == .thinking || (phase == .listening && replyTask != nil) else { return }
-        cancelReply()
+        switch phase {
+        case .thinking, .listening where replyTask != nil:
+            cancelReply()
+        case .speaking:
+            cancelReply()
+            onInterrupt?()
+        default:
+            return
+        }
         phase = .listening
     }
 
@@ -169,7 +180,8 @@ final class CallAgent {
         guard config != nil, phase == .handedOver || isFailed else { return }
         // A reply that failed had already taken the far end's words into
         // the history; they are still owed an answer.
-        let owed = isFailed && history.last?.role == .user
+        // An opening that failed is owed too: nothing was said yet at all.
+        let owed = isFailed && (history.last?.role == .user || history.isEmpty)
         phase = .listening
         if !unanswered.isEmpty || owed { scheduleReply(after: replyDelay) }
     }
@@ -302,7 +314,9 @@ final class CallAgent {
     /// The `explicit_language` the synthesiser takes, for the languages it
     /// names; others are left for it to infer from the text.
     static func synthesisLanguage(_ code: String) -> String? {
-        ["zh", "en", "ja"].contains(code) ? code : nil
+        let codes = ["zh": "zh-cn", "en": "en", "ja": "ja", "es": "es-mx",
+                     "pt": "pt-br", "id": "id", "ko": "ko"]
+        return codes[code]
     }
 
     /// Reads the model's JSON, tolerating prose or code fences around it. A

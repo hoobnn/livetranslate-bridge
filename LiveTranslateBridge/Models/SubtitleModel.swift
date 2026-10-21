@@ -1097,7 +1097,8 @@ final class SubtitleModel {
             uplink.connect()
         }
 
-        await beginAgentIfRequested(credentials: credentials, localRouteReady: localRouteReady)
+        await beginAgentIfRequested(credentials: credentials, localRouteReady: localRouteReady,
+                                    resuming: preserveTranscript)
         guard isRunning, sessionGeneration == generationAtStart else { return }
 
         let session = CallAudioSession(sourceBundleID: sourceBundleID)
@@ -1916,13 +1917,16 @@ extension SubtitleModel {
     /// session without it, since a call that goes ahead untranslated would be
     /// worse than one without the agent.
     fileprivate func beginAgentIfRequested(
-        credentials: CredentialStore.ForProvider, localRouteReady: Bool
+        credentials: CredentialStore.ForProvider, localRouteReady: Bool, resuming: Bool
     ) async {
         agent.end()
         guard agentEnabled else { return }
         guard translates, scope.captures(.remote) else {
             audioNotice = t("agent.needsTranslation"); return
         }
+        // Our own translated speech has to come out in the agent's voice,
+        // and only Doubao's interpretation can speak a Doubao-trained one.
+        guard case .doubao = credentials else { audioNotice = t("agent.needsDoubao"); return }
         guard localRouteReady else { audioNotice = t("agent.needsOutput"); return }
         let (chat, speech) = await Task.detached(priority: .userInitiated) {
             (CredentialStore.loadAgent(), CredentialStore.loadDoubao())
@@ -1949,7 +1953,7 @@ extension SubtitleModel {
             materials: agentMaterials, goal: agentGoal,
             theirLanguage: theirLanguage, myLanguage: myLanguage,
             chat: chat, speech: speech, speakerID: speaker
-        ))
+        ), resuming: resuming)
     }
 
     /// Feeds the agent what the call is hearing. The far end's finished

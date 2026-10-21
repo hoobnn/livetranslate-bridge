@@ -305,7 +305,10 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
     }
 
     /// Ends the current socket and, unless retired, opens another.
-    private func drop(reason: String, retriesBeforeStart: Bool = false) {
+    /// A session that never started is retried a few times, so a network
+    /// blip while connecting does not end the call; anything the service
+    /// refuses outright goes through `fail` instead and never reaches here.
+    private func drop(reason: String) {
         guard !isRetired, !isClosing, task != nil else { return }
         BridgeLog.socket.notice(
             "[\(self.diagnosticLabel, privacy: .public)] doubao socket dropped: \(reason, privacy: .public)"
@@ -314,7 +317,7 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         task = nil
         isStarted = false
         setFailed(true)
-        guard everStarted || (retriesBeforeStart && reconnectAttempts < Self.earlyRetryLimit) else {
+        guard everStarted || reconnectAttempts < Self.earlyRetryLimit else {
             fail("Doubao rejected the session before it started: \(reason)")
             return
         }
@@ -702,8 +705,8 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         "55000031", "45000081", "busy", "timeout", "timed out", "try again",
     ]
 
-    /// How many times a session that never started is retried after a
-    /// transient refusal before the lane gives up.
+    /// How many times a session that never started is retried before the
+    /// lane gives up.
     static let earlyRetryLimit = 3
 
     static func isTransient(_ message: String) -> Bool {
@@ -713,7 +716,7 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
 
     private func handleServiceError(_ message: String) {
         if Self.isTransient(message) {
-            drop(reason: "service error: \(message)", retriesBeforeStart: true)
+            drop(reason: "service error: \(message)")
             return
         }
         let lowered = message.lowercased()

@@ -273,6 +273,23 @@
         }
       }
     },
+    "agent.needsDoubao" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The AI agent needs Doubao as the translation service, so your own speech is translated in the same voice. It is off for this session."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 代聊需要把翻译服务设为豆包，这样你自己说话的译文才能用同一个音色。本次会话未启用代聊。"
+          }
+        }
+      }
+    },
     "agent.needsOutput" : {
       "extractionState" : "manual",
       "localizations" : {

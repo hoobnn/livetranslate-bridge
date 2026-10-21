@@ -80,6 +80,24 @@ struct CallAgentTests {
         agent.end()
     }
 
+    @Test func aRebuiltSessionKeepsTheConversation() {
+        let agent = idleAgent()
+        agent.noteRemote("Is Friday fine?")
+        agent.end()
+        agent.begin(config(), resuming: true)
+        #expect(agent.unansweredForTesting == ["Is Friday fine?"])
+        agent.begin(config())
+        #expect(agent.unansweredForTesting.isEmpty)
+        agent.end()
+    }
+
+    @Test func synthesisLanguagesUseTheServicesCodes() {
+        #expect(CallAgent.synthesisLanguage("zh") == "zh-cn")
+        #expect(CallAgent.synthesisLanguage("es") == "es-mx")
+        #expect(CallAgent.synthesisLanguage("pt") == "pt-br")
+        #expect(CallAgent.synthesisLanguage("fr") == nil)
+    }
+
     @Test func editsToTheBriefReachTheRunningCall() {
         let agent = idleAgent()
         agent.updateBrief(materials: "价格 99 元", goal: "改约到周五")

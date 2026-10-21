@@ -185,7 +185,7 @@ struct AgentSettings: View {
         .onChange(of: chat) { saveResult = nil }
         .onChange(of: speech) { saveResult = nil }
         .fileImporter(isPresented: $isImporting,
-                      allowedContentTypes: [.wav, .mp3, .mpeg4Audio, .audio]) { result in
+                      allowedContentTypes: Self.sampleTypes) { result in
             if case .success(let url) = result { upload(url) }
         }
     }
@@ -195,6 +195,11 @@ struct AgentSettings: View {
     private var canManageVoice: Bool {
         !speech.cloneSpeakerID.isEmpty && speech.isComplete && !speech.appID.isEmpty && !isCloning
     }
+
+    /// What the v1 cloning endpoint takes, and nothing else the picker
+    /// would otherwise offer (AIFF, CAF, FLAC) only to have it refused.
+    private static let sampleTypes: [UTType] =
+        [.wav, .mp3, .mpeg4Audio] + ["ogg", "aac"].compactMap { UTType(filenameExtension: $0) }
 
     private func reload() {
         isBusy = true
