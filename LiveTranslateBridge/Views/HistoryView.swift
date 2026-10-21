@@ -329,6 +329,7 @@ private struct HistoryTranscript: View {
                 isComplete: true,
                 startedAt: turn.startedAt
             )
+            entry.isAgent = turn.isAgent
             built.append(SubtitleModel.VisibleEntry(
                 entry: entry,
                 continuesRun: previous == turn.direction,

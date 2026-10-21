@@ -59,9 +59,14 @@ enum SessionExport {
 
     /// The turns alone, as the clipboard carries them: a header line, then
     /// the source, then the translation, one blank line between turns.
+    /// Who spoke, as a reader of the transcript wants it named.
+    static func speakerLabel(_ turn: SessionRecord.Turn) -> String {
+        turn.isAgent ? t("agent.label") : turn.direction.label
+    }
+
     static func plainTurns(_ turns: [SessionRecord.Turn]) -> String {
         turns.map { turn in
-            ["[\(timeLabel(turn.startedAt))] \(turn.direction.label)",
+            ["[\(timeLabel(turn.startedAt))] \(speakerLabel(turn))",
              turn.transcript, turn.translation]
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
@@ -81,7 +86,7 @@ enum SessionExport {
         lines += metadata(record).map { "- " + t("export.meta.line", "**\($0.0)**", $0.1) }
         lines += ["", "---"]
         for turn in record.turns {
-            lines += ["", "**\(timeLabel(turn.startedAt)) · \(turn.direction.label)**", ""]
+            lines += ["", "**\(timeLabel(turn.startedAt)) · \(speakerLabel(turn))**", ""]
             if !turn.transcript.isEmpty {
                 lines.append(markdownParagraph(turn.transcript))
             }
@@ -141,7 +146,7 @@ enum SessionExport {
                                         .paragraphStyle: paragraph(before: 0, after: 2)])
         }
         for turn in record.turns {
-            append("\(timeLabel(turn.startedAt))  \(turn.direction.label)", [
+            append("\(timeLabel(turn.startedAt))  \(speakerLabel(turn))", [
                 .font: font(9.5, bold: true),
                 .foregroundColor: lanes[turn.direction] ?? secondary,
                 .paragraphStyle: paragraph(before: 14, after: 3),

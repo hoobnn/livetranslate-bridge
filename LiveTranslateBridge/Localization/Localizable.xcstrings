@@ -613,6 +613,23 @@
         }
       }
     },
+    "agent.voice.needsAppID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uploading and checking from here needs the App ID and Access Token login. With a single API key, train the voice on the console's Voice Cloning page and enter its ID above."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这里上传和查询需要「App ID + Access Token」登录方式。只有单个 API Key 时，请在控制台的「声音复刻」页面训练音色，再把音色 ID 填到上面。"
+          }
+        }
+      }
+    },
     "agent.voice.section" : {
       "extractionState" : "manual",
       "localizations" : {

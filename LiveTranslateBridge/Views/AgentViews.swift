@@ -141,10 +141,13 @@ struct AgentSettings: View {
                     Button(t("agent.voice.upload"), systemImage: "waveform.badge.plus") {
                         isImporting = true
                     }
-                    .disabled(speech.cloneSpeakerID.isEmpty || !speech.isComplete || isCloning)
+                    .disabled(!canManageVoice)
                     Button(t("agent.voice.check"), systemImage: "arrow.clockwise") { checkVoice() }
-                        .disabled(speech.cloneSpeakerID.isEmpty || !speech.isComplete || isCloning)
+                        .disabled(!canManageVoice)
                     if isCloning { ProgressView().controlSize(.small) }
+                }
+                if speech.isComplete && speech.appID.isEmpty {
+                    Text(t("agent.voice.needsAppID")).font(.App.caption).foregroundStyle(.secondary)
                 }
                 if let cloneMessage {
                     Text(cloneMessage).font(.App.caption).foregroundStyle(.secondary)
@@ -182,6 +185,12 @@ struct AgentSettings: View {
                       allowedContentTypes: [.wav, .mp3, .mpeg4Audio, .audio]) { result in
             if case .success(let url) = result { upload(url) }
         }
+    }
+
+    /// The v1 cloning endpoints this tab calls take the App ID and token
+    /// login only; a console API key trains voices on the console instead.
+    private var canManageVoice: Bool {
+        !speech.cloneSpeakerID.isEmpty && speech.isComplete && !speech.appID.isEmpty && !isCloning
     }
 
     private func reload() {

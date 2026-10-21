@@ -70,6 +70,25 @@ struct CallAgentTests {
         #expect(agent.phase == .off)
     }
 
+    @Test func aSentenceTranslatedInPartsIsRememberedOnce() {
+        let agent = idleAgent()
+        agent.takeOver()
+        agent.noteLocal("A long", utterance: "s/seg-1")
+        agent.noteLocal("A long sentence", utterance: "s/seg-1")
+        agent.noteLocal("Next one", utterance: "s/seg-2")
+        #expect(agent.historyForTesting.map(\.content) == ["A long sentence", "Next one"])
+        agent.end()
+    }
+
+    @Test func editsToTheBriefReachTheRunningCall() {
+        let agent = idleAgent()
+        agent.updateBrief(materials: "价格 99 元", goal: "改约到周五")
+        let prompt = agent.configForTesting.map(CallAgent.systemPrompt) ?? ""
+        #expect(prompt.contains("价格 99 元"))
+        #expect(prompt.contains("改约到周五"))
+        agent.end()
+    }
+
     @Test func theFarEndSpeakingAgainCancelsAPendingReply() {
         let agent = idleAgent()
         agent.noteRemote("Hello?")
@@ -96,6 +115,18 @@ struct CallAgentTests {
 }
 
 struct AgentServiceParsingTests {
+    @Test func sessionsSavedBeforeTheAgentStillLoad() throws {
+        let old = #"{"direction":"local","startedAt":0,"transcript":"你好","translation":"Hello"}"#
+        let turn = try JSONDecoder().decode(SessionRecord.Turn.self, from: Data(old.utf8))
+        #expect(turn.isAgent == false)
+        var agentTurn = turn
+        agentTurn.isAgent = true
+        let round = try JSONDecoder().decode(
+            SessionRecord.Turn.self, from: JSONEncoder().encode(agentTurn))
+        #expect(round.isAgent)
+    }
+
+
     @Test func chatReplyContentIsExtracted() throws {
         let body = #"{"choices":[{"message":{"role":"assistant","content":"{\"say\":\"Hi\"}"}}]}"#
         #expect(try ChatCompletionClient.parseReply(Data(body.utf8)) == #"{"say":"Hi"}"#)

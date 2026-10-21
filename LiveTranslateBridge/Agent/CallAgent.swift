@@ -72,10 +72,16 @@ final class CallAgent {
     @ObservationIgnored var onInterrupt: (() -> Void)?
     /// A reply finished streaming.
     @ObservationIgnored var onSpeechEnd: (() -> Void)?
+    /// A turn already shown was never heard: its speech failed or was cut
+    /// off before the first sound.
+    @ObservationIgnored var onTurnWithdrawn: ((Turn) -> Void)?
 
     @ObservationIgnored private var config: Config?
     @ObservationIgnored private var history: [ChatCompletionClient.Message] = []
     @ObservationIgnored private var unanswered: [String] = []
+    /// The utterance our last `assistant` message came from, and where it
+    /// sits, so a sentence re-sent as it grows replaces itself.
+    @ObservationIgnored private var lastLocal: (utterance: String, index: Int)?
     @ObservationIgnored private var replyTask: Task<Void, Never>?
     /// Bumped by everything that invalidates a reply in flight.
     @ObservationIgnored private var generation = 0
@@ -86,6 +92,7 @@ final class CallAgent {
         self.config = config
         history = []
         unanswered = []
+        lastLocal = nil
         generation &+= 1
         phase = .listening
     }
@@ -94,6 +101,13 @@ final class CallAgent {
         cancelReply()
         config = nil
         phase = .off
+    }
+
+    /// Takes edits to the goal or material made mid-call; the next reply
+    /// is written from them.
+    func updateBrief(materials: String, goal: String) {
+        config?.materials = materials
+        config?.goal = goal
     }
 
     /// Opens the call with a greeting written from the goal.
@@ -128,12 +142,20 @@ final class CallAgent {
     }
 
     /// Something the user said themselves, in the far end's language when
-    /// the translation is known.
-    func noteLocal(_ sentence: String) {
+    /// the translation is known. `utterance` names the sentence it belongs
+    /// to: a sentence translated in parts arrives again whole as each part
+    /// lands, and replaces what it said before rather than adding to it.
+    func noteLocal(_ sentence: String, utterance: String? = nil) {
         let text = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
         guard config != nil, !text.isEmpty else { return }
+        if let utterance, let last = lastLocal, last.utterance == utterance,
+           history.indices.contains(last.index), history[last.index].role == .assistant {
+            history[last.index].content = text
+            return
+        }
         flushUnanswered()
         history.append(.init(role: .assistant, content: text))
+        lastLocal = utterance.map { ($0, history.count - 1) }
     }
 
     func takeOver() {
@@ -199,23 +221,34 @@ final class CallAgent {
         guard generation == expected, !Task.isCancelled else { return }
         let turn = Self.parseTurn(raw)
         guard !turn.say.isEmpty else { phase = .listening; return }
+        let turnIndex = history.count
         history.append(.init(role: .assistant, content: turn.say))
+        lastLocal = nil
         onTurn?(turn)
         phase = .speaking
 
         let onAudio = self.onAudio
+        let heard = OSAllocatedUnfairLock(initialState: false)
+        var failure: (any Error)?
         do {
             try await DoubaoVoiceServices.synthesize(
                 text: turn.say, speaker: config.speakerID,
                 language: Self.synthesisLanguage(config.theirLanguage),
                 credentials: config.speech
-            ) { pcm in onAudio?(pcm) }
-        } catch is CancellationError {
-            return
+            ) { pcm in
+                heard.withLock { $0 = true }
+                onAudio?(pcm)
+            }
         } catch {
-            guard generation == expected else { return }
-            BridgeLog.socket.error("agent speech failed: \(error.localizedDescription, privacy: .public)")
-            phase = .failed(error.localizedDescription)
+            failure = error
+        }
+        // Once any of it played, the far end heard it — part of a reply is
+        // still something we said. Before that, it was never said at all.
+        if !heard.withLock({ $0 }) { withdraw(turn, at: turnIndex) }
+        if let failure {
+            guard !(failure is CancellationError), generation == expected else { return }
+            BridgeLog.socket.error("agent speech failed: \(failure.localizedDescription, privacy: .public)")
+            phase = .failed(failure.localizedDescription)
             return
         }
         guard generation == expected else { return }
@@ -223,6 +256,14 @@ final class CallAgent {
         replyTask = nil
         phase = turn.hangsUp ? .handedOver : .listening
         if phase == .listening, !unanswered.isEmpty { scheduleReply(after: replyDelay) }
+    }
+
+    private func withdraw(_ turn: Turn, at index: Int) {
+        guard history.indices.contains(index), history[index].role == .assistant,
+              history[index].content == turn.say else { return }
+        history.remove(at: index)
+        if let last = lastLocal, last.index > index { lastLocal = (last.utterance, last.index - 1) }
+        onTurnWithdrawn?(turn)
     }
 
     // MARK: - prompt
@@ -280,5 +321,6 @@ final class CallAgent {
     #if DEBUG
     var historyForTesting: [ChatCompletionClient.Message] { history }
     var unansweredForTesting: [String] { unanswered }
+    var configForTesting: Config? { config }
     #endif
 }

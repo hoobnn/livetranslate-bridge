@@ -224,16 +224,20 @@ private struct DoubaoCredentialSettings: View {
     }
 
     private func save() {
-        let credentials = CredentialStore.DoubaoCredentials(
-            appID: appID.trimmingCharacters(in: .whitespacesAndNewlines),
-            accessToken: accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
-            speakerID: speakerID.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+        let appID = appID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let accessToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let speakerID = speakerID.trimmingCharacters(in: .whitespacesAndNewlines)
         isBusy = true
         Task {
             defer { isBusy = false }
             saveResult = await Task.detached(priority: .userInitiated) {
-                CredentialStore.saveDoubao(credentials)
+                // The trained voice shares this item but is edited in the AI
+                // agent tab; keep it rather than blanking it.
+                var credentials = CredentialStore.loadDoubao()
+                credentials.appID = appID
+                credentials.accessToken = accessToken
+                credentials.speakerID = speakerID
+                return CredentialStore.saveDoubao(credentials)
             }.value
         }
     }

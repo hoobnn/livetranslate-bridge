@@ -140,6 +140,7 @@ nonisolated enum DoubaoVoiceServices {
         _ audio: Data, format: String, speakerID: String,
         credentials: CredentialStore.DoubaoCredentials
     ) async throws {
+        try requireAppID(credentials)
         let body: [String: Any] = [
             "appid": credentials.appID,
             "speaker_id": speakerID,
@@ -155,6 +156,7 @@ nonisolated enum DoubaoVoiceServices {
     static func cloneStatus(
         speakerID: String, credentials: CredentialStore.DoubaoCredentials
     ) async throws -> CloneStatus {
+        try requireAppID(credentials)
         let reply = try await postJSON(
             "api/v1/mega_tts/status",
             ["appid": credentials.appID, "speaker_id": speakerID], credentials
@@ -162,6 +164,14 @@ nonisolated enum DoubaoVoiceServices {
         try checkBaseResponse(reply)
         let raw = reply["status"] as? Int ?? 0
         return CloneStatus(rawValue: raw) ?? .notFound
+    }
+
+    /// The v1 cloning endpoints read the App ID from the body and do not
+    /// take the new console's API key.
+    private static func requireAppID(_ credentials: CredentialStore.DoubaoCredentials) throws {
+        guard !credentials.appID.isEmpty else {
+            throw ServiceError(message: "voice cloning needs the App ID and Access Token login")
+        }
     }
 
     private static func postJSON(
