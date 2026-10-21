@@ -14,7 +14,7 @@ struct SettingsView: View {
                 GeneralSettings(model: model, localization: localization, updater: updater)
             }
             Tab(t("settings.tab.credentials"), systemImage: "key") {
-                CredentialSettings()
+                ProviderCredentialSettings(model: model)
             }
             Tab(t("settings.tab.voice"), systemImage: "speaker.wave.2") {
                 AudioRoutingSettings(model: model)
@@ -113,6 +113,140 @@ private struct GeneralSettings: View {
 }
 
 // MARK: - credentials
+
+/// The service picker, then the credentials that service needs.
+private struct ProviderCredentialSettings: View {
+    @Bindable var model: SubtitleModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    Picker(t("settings.provider"), selection: $model.provider) {
+                        Text(t("settings.provider.qwen")).tag(TranslationProvider.qwen)
+                        Text(t("settings.provider.doubao")).tag(TranslationProvider.doubao)
+                    }
+                } footer: {
+                    Text(t("settings.translation.footer"))
+                        .font(.App.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(model.isRunning)
+            }
+            .formStyle(.grouped)
+            .frame(height: 96)
+            .scrollDisabled(true)
+
+            switch model.provider {
+            case .qwen: CredentialSettings()
+            case .doubao: DoubaoCredentialSettings()
+            }
+        }
+    }
+}
+
+private struct DoubaoCredentialSettings: View {
+    @State private var appID = ""
+    @State private var accessToken = ""
+    @State private var speakerID = ""
+    @State private var saveResult: Bool?
+    @State private var isBusy = true
+
+    var body: some View {
+        Form {
+            Section {
+                TextField(t("settings.doubao.appID"), text: Binding(
+                    get: { appID }, set: { appID = $0; saveResult = nil }
+                ))
+                    .autocorrectionDisabled()
+                SecureField(t("settings.doubao.accessToken"), text: Binding(
+                    get: { accessToken }, set: { accessToken = $0; saveResult = nil }
+                ))
+                TextField(t("settings.doubao.speakerID"), text: Binding(
+                    get: { speakerID }, set: { speakerID = $0; saveResult = nil }
+                ))
+                    .autocorrectionDisabled()
+            } header: {
+                Text(t("settings.doubao.section"))
+            } footer: {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(t("settings.credentials.footer.keychain"),
+                          systemImage: "lock.shield")
+                    Text(t("settings.doubao.footer.auth"))
+                    Text(t("settings.doubao.footer.voice"))
+                    Link(t("settings.doubao.console"),
+                         destination: URL(string: "https://console.volcengine.com/speech/app")!)
+                }
+                .font(.App.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Section {
+                HStack(spacing: Theme.spacing12) {
+                    Button(t("settings.credentials.save")) { save() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button(t("settings.credentials.clear"), role: .destructive) { clear() }
+                        .disabled(appID.isEmpty && accessToken.isEmpty && speakerID.isEmpty)
+
+                    Spacer()
+
+                    if isBusy {
+                        ProgressView().controlSize(.small)
+                    } else if let saveResult {
+                        Label(t(saveResult ? "settings.credentials.saved" : "settings.credentials.failed"),
+                              systemImage: saveResult ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(saveResult ? Theme.live : Theme.failure)
+                            .font(.App.body)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .disabled(isBusy)
+        .onAppear(perform: reload)
+    }
+
+    private func reload() {
+        isBusy = true
+        Task {
+            defer { isBusy = false }
+            let stored = await Task.detached(priority: .userInitiated) {
+                CredentialStore.loadDoubao()
+            }.value
+            appID = stored.appID
+            accessToken = stored.accessToken
+            speakerID = stored.speakerID
+        }
+    }
+
+    private func save() {
+        let credentials = CredentialStore.DoubaoCredentials(
+            appID: appID.trimmingCharacters(in: .whitespacesAndNewlines),
+            accessToken: accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
+            speakerID: speakerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        isBusy = true
+        Task {
+            defer { isBusy = false }
+            saveResult = await Task.detached(priority: .userInitiated) {
+                CredentialStore.saveDoubao(credentials)
+            }.value
+        }
+    }
+
+    private func clear() {
+        isBusy = true
+        Task {
+            defer { isBusy = false }
+            let ok = await Task.detached(priority: .userInitiated) {
+                CredentialStore.clearDoubao()
+            }.value
+            if ok { appID = ""; accessToken = ""; speakerID = "" }
+            saveResult = ok ? nil : false
+        }
+    }
+}
 
 private struct CredentialSettings: View {
     @State private var apiKey = ""
@@ -250,21 +384,23 @@ private struct TranslationSettings: View {
 
     var body: some View {
         Form {
-            Section {
-                Picker(t("settings.translation.region"), selection: $model.region) {
-                    Text(t("settings.translation.region.beijing"))
-                        .tag(TranslationClient.Config.Region.beijing)
-                    Text(t("settings.translation.region.singapore"))
-                        .tag(TranslationClient.Config.Region.singapore)
+            if model.provider == .qwen {
+                Section {
+                    Picker(t("settings.translation.region"), selection: $model.region) {
+                        Text(t("settings.translation.region.beijing"))
+                            .tag(TranslationClient.Config.Region.beijing)
+                        Text(t("settings.translation.region.singapore"))
+                            .tag(TranslationClient.Config.Region.singapore)
+                    }
+                } header: {
+                    Text(t("settings.translation.section"))
+                } footer: {
+                    Text(t("settings.translation.footer"))
+                        .font(.App.caption)
+                        .foregroundStyle(.secondary)
                 }
-            } header: {
-                Text(t("settings.translation.section"))
-            } footer: {
-                Text(t("settings.translation.footer"))
-                    .font(.App.caption)
-                    .foregroundStyle(.secondary)
+                .disabled(model.isRunning)
             }
-            .disabled(model.isRunning)
 
             SegmentationSettings(model: model)
 

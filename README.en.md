@@ -75,6 +75,16 @@ The app checks for new versions with [Sparkle](https://sparkle-project.org/) and
 3. In Audio Routing, choose the audio source, the microphone and the output devices for both sides.
 4. Go back to Subtitles, pick the two languages and click Start. The first time, macOS asks for system audio recording and microphone access.
 
+### Using Doubao simultaneous interpretation instead
+
+You can switch to Volcengine's [Doubao Simultaneous Interpretation 2.0](https://www.volcengine.com/docs/6561/1756902) (Seed LiveInterpret 2.0):
+
+1. Enable Simultaneous Interpretation 2.0 in the [Doubao Speech console](https://console.volcengine.com/speech/app).
+2. In Settings › Credentials, set Translation service to "Volcengine · Doubao Simultaneous Interpretation 2.0". The classic console gives an App ID and Access Token; the new console gives a single API key, so leave App ID empty.
+3. With voice cloning on, translations are spoken in each speaker's own voice; with it off, the preset voice ID you enter is used (empty lets the service choose).
+
+Doubao translates between Chinese, English, Japanese, French, German and Spanish; Korean and Russian aren't supported. When debugging, `DOUBAO_APP_ID`, `DOUBAO_ACCESS_TOKEN` (or `DOUBAO_API_KEY`) and `DOUBAO_SPEAKER_ID` override the keychain.
+
 ## Sending translated speech into a meeting or call
 
 You need a loopback audio device such as [BlackHole](https://existential.audio/blackhole/):
@@ -82,6 +92,7 @@ You need a loopback audio device such as [BlackHole](https://existential.audio/b
 1. Set the "What others hear" output to the loopback device.
 2. In the meeting or call app, set the input to the same loopback device.
 3. Keep a real microphone as LiveTranslate Bridge's input. Otherwise the app picks up its own translated voice.
+4. To have the other side hear only the translation and never your original voice, set the original volume for "What others hear" to 0 and turn on voice cloning: they hear the translation in your voice.
 
 ## FAQ
 

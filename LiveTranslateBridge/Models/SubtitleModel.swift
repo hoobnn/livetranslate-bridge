@@ -311,8 +311,10 @@ final class SubtitleModel {
     /// they carry a key and get localized at display time.
     enum StartFailure: String, Equatable, Sendable {
         case missingCredentials = "error.noCredentials"
+        case missingDoubaoCredentials = "error.noDoubaoCredentials"
         case unsupportedSystem = "error.unsupportedOS"
         case sameLanguages = "error.sameLanguages"
+        case unsupportedLanguage = "error.unsupportedLanguage"
 
         @MainActor
         var message: String { t(rawValue) }
@@ -758,6 +760,16 @@ final class SubtitleModel {
         didSet { Defaults.region = region }
     }
 
+    /// Which service translates. Read when a session starts.
+    var provider: TranslationProvider = Defaults.provider {
+        didSet { Defaults.provider = provider }
+    }
+
+    /// Whether the chosen provider handles both languages of the pair.
+    var providerSupportsLanguages: Bool {
+        provider.supports(myLanguage) && provider.supports(theirLanguage)
+    }
+
     /// Term overrides, one "source = target" pair per line. A session
     /// setting: the list is part of the `session.update` that opens each
     /// socket, and the service rejects a second update once audio has begun.
@@ -818,7 +830,7 @@ final class SubtitleModel {
     @ObservationIgnored private var serverResponseStatus: [String: String] = [:]
     @ObservationIgnored private var retiredServerItems = Set<String>()
     @ObservationIgnored private var retiredServerOrder: [String] = []
-    private var clients: [Direction: TranslationClient] = [:]
+    private var clients: [Direction: any LiveTranslationSession] = [:]
     @ObservationIgnored private var eventBatchers: [Direction: TranslationEventBatcher] = [:]
     @ObservationIgnored private var startupTask: Task<Void, Never>?
     @ObservationIgnored private var routeWatcher: AudioRouteWatcher?
@@ -879,6 +891,10 @@ final class SubtitleModel {
             status = .failed(StartFailure.sameLanguages.message)
             return
         }
+        guard providerSupportsLanguages else {
+            status = .failed(StartFailure.unsupportedLanguage.message)
+            return
+        }
 
         isRunning = true
         sessionGeneration &+= 1
@@ -898,10 +914,11 @@ final class SubtitleModel {
         let inputUID = inputDeviceUID
         let outputUID = outputDeviceUID
         let remoteOutputUID = remoteOutputDeviceUID
+        let provider = provider
         startupTask = Task { [weak self] in
             let prepared = await Task.detached(priority: .userInitiated) {
                 (
-                    CredentialStore.load(),
+                    CredentialStore.load(for: provider),
                     inputUID.isEmpty ? AudioInputDevice.systemDefault : AudioInputDevice.named(uid: inputUID),
                     AudioOutputDevice.named(uid: outputUID),
                     remoteOutputUID.isEmpty ? AudioOutputDevice.systemDefault : AudioOutputDevice.named(uid: remoteOutputUID)
@@ -911,7 +928,9 @@ final class SubtitleModel {
             guard prepared.0.isComplete else {
                 self.isRunning = false
                 self.stopWatchingRoutes()
-                self.status = .failed(StartFailure.missingCredentials.message)
+                self.status = .failed(provider == .doubao
+                    ? StartFailure.missingDoubaoCredentials.message
+                    : StartFailure.missingCredentials.message)
                 return
             }
             await self.startPrepared(
@@ -925,7 +944,7 @@ final class SubtitleModel {
     }
 
     private func startPrepared(
-        credentials: CredentialStore.Credentials,
+        credentials: CredentialStore.ForProvider,
         inputDevice: AudioInputDevice?,
         localOutputDevice: AudioOutputDevice?,
         remoteOutputDevice: AudioOutputDevice?,
@@ -1356,23 +1375,40 @@ final class SubtitleModel {
 
     private func makeClient(
         direction: Direction,
-        credentials: CredentialStore.Credentials,
+        credentials: CredentialStore.ForProvider,
         targetLanguage: String?,
         sourceLanguage: String?,
         wantsAudio: Bool,
         voice: TranslationClient.Config.Voice = .preset
-    ) -> TranslationClient {
-        let config = TranslationClient.Config(
-            apiKey: credentials.apiKey,
-            workspaceID: credentials.workspaceID,
-            region: region,
-            targetLanguage: targetLanguage,
-            sourceLanguage: sourceLanguage,
-            wantsAudio: wantsAudio,
-            phrases: glossary,
-            voice: voice
-        )
-        let client = TranslationClient(config: config, diagnosticLabel: direction.rawValue)
+    ) -> any LiveTranslationSession {
+        let client: any LiveTranslationSession
+        switch credentials {
+        case .qwen(let credentials):
+            let config = TranslationClient.Config(
+                apiKey: credentials.apiKey,
+                workspaceID: credentials.workspaceID,
+                region: region,
+                targetLanguage: targetLanguage,
+                sourceLanguage: sourceLanguage,
+                wantsAudio: wantsAudio,
+                phrases: glossary,
+                voice: voice
+            )
+            client = TranslationClient(config: config, diagnosticLabel: direction.rawValue)
+        case .doubao(let credentials):
+            let config = DoubaoTranslationClient.Config(
+                appID: credentials.appID,
+                accessToken: credentials.accessToken,
+                // Doubao does not detect the source; the pair always names it.
+                sourceLanguage: sourceLanguage ?? (direction == .remote ? theirLanguage : myLanguage),
+                targetLanguage: targetLanguage,
+                wantsAudio: wantsAudio,
+                phrases: glossary,
+                voice: voice,
+                presetSpeakerID: credentials.speakerID
+            )
+            client = DoubaoTranslationClient(config: config, diagnosticLabel: direction.rawValue)
+        }
         let generation = sessionGeneration
         let playback = playbackPath(for: direction)
         let playbackToken = playback.token

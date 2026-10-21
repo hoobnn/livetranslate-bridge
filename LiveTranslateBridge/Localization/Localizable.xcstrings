@@ -1072,6 +1072,23 @@
         }
       }
     },
+    "error.noDoubaoCredentials" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doubao Speech Access Token or API key is not set"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未配置豆包语音 Access Token 或 API Key"
+          }
+        }
+      }
+    },
     "error.sameLanguages" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1085,6 +1102,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "请选择两种不同的语言 —— 相同语言之间没有需要翻译的内容。"
+          }
+        }
+      }
+    },
+    "error.unsupportedLanguage" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The selected translation service doesn't support one of these languages. Doubao supports Chinese, English, Japanese, French, German and Spanish."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前翻译服务不支持所选语言。豆包同声传译支持中文、英语、日语、法语、德语和西班牙语。"
           }
         }
       }
@@ -2146,6 +2180,125 @@
         }
       }
     },
+    "settings.doubao.accessToken" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Access Token / API Key"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Access Token / API Key"
+          }
+        }
+      }
+    },
+    "settings.doubao.appID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App ID (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App ID（可选）"
+          }
+        }
+      }
+    },
+    "settings.doubao.console" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doubao Speech console"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "豆包语音控制台"
+          }
+        }
+      }
+    },
+    "settings.doubao.footer.auth" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable Simultaneous Interpretation 2.0 in the Doubao Speech console first. The classic console gives an App ID and Access Token; the new console gives a single API key, so leave App ID empty."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先在豆包语音控制台开通“同声传译 2.0”。旧版控制台填 App ID 和 Access Token；新版控制台只填 API Key，App ID 留空。"
+          }
+        }
+      }
+    },
+    "settings.doubao.footer.voice" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "With voice cloning on, translations are spoken in the speaker's own voice. With it off, the preset voice ID here is used; leave it empty to let the service choose."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开“克隆声音”时，译文用说话人自己的音色播放；关闭时用这里填的音色 ID，留空则由服务决定。"
+          }
+        }
+      }
+    },
+    "settings.doubao.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doubao Speech credentials"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "豆包语音凭据"
+          }
+        }
+      }
+    },
+    "settings.doubao.speakerID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preset voice ID (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预置音色 ID（可选）"
+          }
+        }
+      }
+    },
     "settings.general.appearance" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2227,6 +2380,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "术语表"
+          }
+        }
+      }
+    },
+    "settings.provider" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Translation service"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译服务"
+          }
+        }
+      }
+    },
+    "settings.provider.doubao" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volcengine · Doubao Simultaneous Interpretation 2.0"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "火山引擎 · 豆包同声传译 2.0"
+          }
+        }
+      }
+    },
+    "settings.provider.qwen" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alibaba Model Studio · Qwen LiveTranslate"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "阿里云百炼 · Qwen LiveTranslate"
           }
         }
       }
