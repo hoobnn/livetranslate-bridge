@@ -113,6 +113,7 @@ struct AgentSettings: View {
     @State private var isImporting = false
     @State private var cloneMessage: String?
     @State private var isCloning = false
+    @State private var sampleTranscript = ""
 
     var body: some View {
         Form {
@@ -137,6 +138,8 @@ struct AgentSettings: View {
             Section {
                 TextField(t("agent.voice.speakerID"), text: $speech.cloneSpeakerID)
                     .autocorrectionDisabled()
+                TextField(t("agent.voice.transcript"), text: $sampleTranscript, axis: .vertical)
+                    .lineLimit(1...3)
                 HStack(spacing: Theme.spacing12) {
                     Button(t("agent.voice.upload"), systemImage: "waveform.badge.plus") {
                         isImporting = true
@@ -228,6 +231,7 @@ struct AgentSettings: View {
 
     private func upload(_ url: URL) {
         let speech = speech
+        let transcript = sampleTranscript
         isCloning = true
         cloneMessage = t("agent.voice.uploading")
         Task {
@@ -239,7 +243,8 @@ struct AgentSettings: View {
                 let format = url.pathExtension.lowercased() == "m4a" ? "m4a" : url.pathExtension.lowercased()
                 try await DoubaoVoiceServices.uploadSample(
                     data, format: format.isEmpty ? "wav" : format,
-                    speakerID: speech.cloneSpeakerID, credentials: speech
+                    speakerID: speech.cloneSpeakerID, transcript: transcript,
+                    credentials: speech
                 )
                 cloneMessage = t("agent.voice.uploaded")
             } catch {

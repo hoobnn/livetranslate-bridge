@@ -200,6 +200,10 @@ final class SubtitleModel {
         var isComplete = false
         /// Spoken by the call agent rather than by the user.
         var isAgent = false
+
+        /// Who the turn belongs to on the board: the agent's turns on our
+        /// side are a different speaker from our own.
+        var speaker: Speaker { Speaker(direction: direction, isAgent: isAgent) }
         var sourceComplete = false
         var translationComplete = false
         var responseStatus: String?
@@ -344,6 +348,11 @@ final class SubtitleModel {
 
     @ObservationIgnored private var terminationObserver: (any NSObjectProtocol)?
 
+    nonisolated struct Speaker: Equatable, Sendable {
+        let direction: Direction
+        let isAgent: Bool
+    }
+
     private(set) var entries: [Entry] = []
     private struct ArchivedEntry {
         let direction: Direction
@@ -381,14 +390,14 @@ final class SubtitleModel {
     /// label with nothing in between to justify it.
     var visibleEntries: [VisibleEntry] {
         var rows: [VisibleEntry] = []
-        var previous: Direction?
+        var previous: Speaker?
         for entry in entries.suffix(Self.renderedEntryLimit) where !entry.isEmpty {
             rows.append(VisibleEntry(
                 entry: entry,
-                continuesRun: previous == entry.direction,
-                startsNewSpeaker: previous != nil && previous != entry.direction
+                continuesRun: previous == entry.speaker,
+                startsNewSpeaker: previous != nil && previous != entry.speaker
             ))
-            previous = entry.direction
+            previous = entry.speaker
         }
         return rows
     }
@@ -1664,8 +1673,8 @@ final class SubtitleModel {
         // sits above it never changes afterwards, because entries are only
         // ever appended here and removed by `seal` — which repairs them.
         if let previous = entries.last {
-            entry.continuesRun = previous.direction == direction
-            entry.startsNewSpeaker = previous.direction != direction
+            entry.continuesRun = previous.speaker == entry.speaker
+            entry.startsNewSpeaker = previous.speaker != entry.speaker
         }
         entries.append(entry)
         liveEntries[direction] = entry
@@ -1740,9 +1749,9 @@ final class SubtitleModel {
     private func repairRunFlags(at index: Int) {
         guard entries.indices.contains(index) else { return }
         let entry = entries[index]
-        let previous = index > 0 ? entries[index - 1].direction : nil
-        let continues = previous == entry.direction
-        let startsNew = previous != nil && previous != entry.direction
+        let previous = index > 0 ? entries[index - 1].speaker : nil
+        let continues = previous == entry.speaker
+        let startsNew = previous != nil && previous != entry.speaker
         // Guarded: a linked item repairs the whole board, and an unguarded
         // write is an observation event per turn even when nothing moved.
         if entry.continuesRun != continues { entry.continuesRun = continues }

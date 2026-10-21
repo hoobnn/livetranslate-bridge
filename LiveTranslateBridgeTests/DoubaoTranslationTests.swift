@@ -317,6 +317,12 @@ struct DoubaoClientEventTests {
         client.close()
     }
 
+    @Test func busyAndTimeoutAnswersAreRetriedNotFatal() {
+        #expect(DoubaoTranslationClient.isTransient("55000031: server busy"))
+        #expect(DoubaoTranslationClient.isTransient("45000081: packet timeout"))
+        #expect(!DoubaoTranslationClient.isTransient("45000001: invalid access key"))
+    }
+
     @Test func anErrorBeforeTheFirstSessionFailsVisibly() {
         let (client, log) = client()
         var error = frame(153)

@@ -167,8 +167,11 @@ final class CallAgent {
 
     func handBack() {
         guard config != nil, phase == .handedOver || isFailed else { return }
+        // A reply that failed had already taken the far end's words into
+        // the history; they are still owed an answer.
+        let owed = isFailed && history.last?.role == .user
         phase = .listening
-        if !unanswered.isEmpty { scheduleReply(after: replyDelay) }
+        if !unanswered.isEmpty || owed { scheduleReply(after: replyDelay) }
     }
 
     private var isFailed: Bool {

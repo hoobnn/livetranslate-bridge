@@ -305,7 +305,7 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
     }
 
     /// Ends the current socket and, unless retired, opens another.
-    private func drop(reason: String) {
+    private func drop(reason: String, retriesBeforeStart: Bool = false) {
         guard !isRetired, !isClosing, task != nil else { return }
         BridgeLog.socket.notice(
             "[\(self.diagnosticLabel, privacy: .public)] doubao socket dropped: \(reason, privacy: .public)"
@@ -314,7 +314,7 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         task = nil
         isStarted = false
         setFailed(true)
-        guard everStarted else {
+        guard everStarted || (retriesBeforeStart && reconnectAttempts < Self.earlyRetryLimit) else {
             fail("Doubao rejected the session before it started: \(reason)")
             return
         }
@@ -695,7 +695,27 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         return current + incoming
     }
 
+    /// The service's own "try again" answers: busy servers and packets that
+    /// timed out in transit. Checked before the fatal words, since their
+    /// codes share the client-error range.
+    static let transientErrors = [
+        "55000031", "45000081", "busy", "timeout", "timed out", "try again",
+    ]
+
+    /// How many times a session that never started is retried after a
+    /// transient refusal before the lane gives up.
+    static let earlyRetryLimit = 3
+
+    static func isTransient(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        return transientErrors.contains { lowered.contains($0) }
+    }
+
     private func handleServiceError(_ message: String) {
+        if Self.isTransient(message) {
+            drop(reason: "service error: \(message)", retriesBeforeStart: true)
+            return
+        }
         let lowered = message.lowercased()
         let fatal = [
             "auth", "unauthorized", "forbidden", "invalid", "permission", "denied",

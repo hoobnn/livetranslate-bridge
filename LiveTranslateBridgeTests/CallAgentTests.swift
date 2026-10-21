@@ -149,6 +149,24 @@ struct AgentServiceParsingTests {
         #expect(DoubaoVoiceServices.parseSynthesisLine("") == .ignored)
     }
 
+    @Test func clonedVoicesNameTheirModel() {
+        let cloned = DoubaoVoiceServices.synthesisBody(text: "Hi", speaker: "S_1", language: nil)
+        let preset = DoubaoVoiceServices.synthesisBody(text: "Hi", speaker: "zh_female_x", language: nil)
+        #expect((cloned["req_params"] as? [String: Any])?["model"] as? String
+                == DoubaoVoiceServices.cloneModel)
+        #expect((preset["req_params"] as? [String: Any])?["model"] == nil)
+    }
+
+    @Test func sampleTranscriptIsSentOnlyWhenGiven() {
+        func sample(_ transcript: String) -> [String: Any]? {
+            let body = DoubaoVoiceServices.uploadBody(Data([1]), format: "wav", speakerID: "S_1",
+                                                     transcript: transcript, appID: "a")
+            return (body["audios"] as? [[String: Any]])?.first
+        }
+        #expect(sample("  ")?["text"] == nil)
+        #expect(sample("你好，今天天气不错")?["text"] as? String == "你好，今天天气不错")
+    }
+
     @Test func synthesisAsksForPlayerReadyPCM() {
         let body = DoubaoVoiceServices.synthesisBody(text: "Hi", speaker: "S_1", language: "en")
         let params = body["req_params"] as? [String: Any]

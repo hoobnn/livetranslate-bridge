@@ -766,6 +766,23 @@
         }
       }
     },
+    "agent.voice.transcript" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What the sample says (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音里念的文字（可选）"
+          }
+        }
+      }
+    },
     "agent.voice.uploaded" : {
       "extractionState" : "manual",
       "localizations" : {

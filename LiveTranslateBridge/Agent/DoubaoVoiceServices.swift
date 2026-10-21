@@ -13,6 +13,8 @@ nonisolated enum DoubaoVoiceServices {
     static let cloneResourceID = "seed-icl-2.0"
     /// Stock voices.
     static let presetResourceID = "seed-tts-2.0"
+    /// The model cloned voices are rendered with.
+    static let cloneModel = "seed-tts-2.0-standard"
 
     struct ServiceError: LocalizedError, Equatable {
         let message: String
@@ -54,6 +56,11 @@ nonisolated enum DoubaoVoiceServices {
                 "sample_rate": 24_000,
             ],
         ]
+        if speaker.hasPrefix("S_") {
+            // Cloned voices name the model that speaks them; the standard
+            // one is the lower-latency of the two, which a call wants.
+            params["model"] = cloneModel
+        }
         if let language, let data = try? JSONSerialization.data(
             withJSONObject: ["explicit_language": language]
         ) {
@@ -137,20 +144,32 @@ nonisolated enum DoubaoVoiceServices {
     /// `speakerID`, which must already be allotted to the account in the
     /// console. Training takes seconds to minutes; poll `cloneStatus`.
     static func uploadSample(
-        _ audio: Data, format: String, speakerID: String,
+        _ audio: Data, format: String, speakerID: String, transcript: String = "",
         credentials: CredentialStore.DoubaoCredentials
     ) async throws {
         try requireAppID(credentials)
-        let body: [String: Any] = [
-            "appid": credentials.appID,
+        let body = uploadBody(audio, format: format, speakerID: speakerID,
+                              transcript: transcript, appID: credentials.appID)
+        let reply = try await postJSON("api/v1/mega_tts/audio/upload", body, credentials)
+        try checkBaseResponse(reply)
+    }
+
+    /// What the sample upload sends. The transcript of what the sample
+    /// says is optional, but lets the service check the recording against it.
+    static func uploadBody(
+        _ audio: Data, format: String, speakerID: String, transcript: String, appID: String
+    ) -> [String: Any] {
+        var sample: [String: Any] = ["audio_bytes": audio.base64EncodedString(), "audio_format": format]
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty { sample["text"] = text }
+        return [
+            "appid": appID,
             "speaker_id": speakerID,
-            "audios": [["audio_bytes": audio.base64EncodedString(), "audio_format": format]],
+            "audios": [sample],
             "source": 2,
             // Voice cloning 2.0.
             "model_type": 4,
         ]
-        let reply = try await postJSON("api/v1/mega_tts/audio/upload", body, credentials)
-        try checkBaseResponse(reply)
     }
 
     static func cloneStatus(

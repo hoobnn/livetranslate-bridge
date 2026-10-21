@@ -633,7 +633,7 @@ struct EntryCard: View {
     /// line stays flush with the margin the row sits against.
     private var text: some View {
         VStack(alignment: isLocal ? .trailing : .leading, spacing: Theme.spacing4) {
-            if !continuesRun || entry.isAgent { speakerLabel }
+            if !continuesRun { speakerLabel }
             lines
         }
     }
