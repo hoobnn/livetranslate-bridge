@@ -16,7 +16,7 @@ extension SubtitleModel {
     /// model that owns it is now in another file.
     nonisolated final class AudioPath: @unchecked Sendable {
         private let direction: Direction
-        private var client: TranslationClient?
+        private var client: (any LiveTranslationSession)?
         private var resampler: Resampler?
         private var sourceFormat: AVAudioFormat?
         /// Converted PCM not yet long enough to make a chunk.
@@ -52,7 +52,7 @@ extension SubtitleModel {
         /// `gatesMicrophone` also stops the microphone's upload through long
         /// silences. The far end is always gated, but only on exact digital
         /// silence, which cannot cost a word.
-        func install(client: TranslationClient?, gatesMicrophone: Bool = false) {
+        func install(client: (any LiveTranslationSession)?, gatesMicrophone: Bool = false) {
             queue.invalidate()
             queue.perform { [weak self] in
                 guard let self else { return }
@@ -121,7 +121,7 @@ extension SubtitleModel {
         /// came, that was ~94 JSON + Base64 frames a second per direction,
         /// each with its own completion hop; four of them to a frame is a
         /// quarter of the frames for at most 30 ms of added wait.
-        private func stage(_ pcm: Data, to client: TranslationClient) {
+        private func stage(_ pcm: Data, to client: any LiveTranslationSession) {
             staged.append(pcm)
             while staged.count >= Self.chunkBytes {
                 // A standalone `Data`, not a slice: a chunk held back behind

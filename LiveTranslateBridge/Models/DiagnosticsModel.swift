@@ -289,10 +289,12 @@ final class DiagnosticsModel {
     /// offline path that avoids having to place a call to test a change.
     func streamFile(at url: URL, using model: SubtitleModel) {
         guard !isStreamingFile else { return }
-        let credentials = CredentialStore.load()
+        let credentials = CredentialStore.load(for: model.provider)
         guard credentials.isComplete else {
             fileLines = [FileLine(kind: .status,
-                                  text: t("diagnostics.file.noCredentials"),
+                                  text: t(model.provider == .doubao
+                                      ? "error.noDoubaoCredentials"
+                                      : "diagnostics.file.noCredentials"),
                                   isError: true)]
             return
         }
@@ -305,15 +307,26 @@ final class DiagnosticsModel {
         )]
         isStreamingFile = true
 
-        let config = TranslationClient.Config(
-            apiKey: credentials.apiKey,
-            workspaceID: credentials.workspaceID,
-            region: model.region,
-            targetLanguage: model.myLanguage,
-            sourceLanguage: model.theirLanguage,
-            wantsAudio: false
-        )
-        let client = TranslationClient(config: config)
+        let client: any LiveTranslationSession
+        switch credentials {
+        case .qwen(let credentials):
+            client = TranslationClient(config: TranslationClient.Config(
+                apiKey: credentials.apiKey,
+                workspaceID: credentials.workspaceID,
+                region: model.region,
+                targetLanguage: model.myLanguage,
+                sourceLanguage: model.theirLanguage,
+                wantsAudio: false
+            ))
+        case .doubao(let credentials):
+            client = DoubaoTranslationClient(config: DoubaoTranslationClient.Config(
+                appID: credentials.appID,
+                accessToken: credentials.accessToken,
+                sourceLanguage: model.theirLanguage,
+                targetLanguage: model.myLanguage,
+                wantsAudio: false
+            ))
+        }
         client.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in self?.appendFileEvent(event) }
         }
@@ -379,7 +392,7 @@ final class DiagnosticsModel {
     }
 
     private nonisolated static func stream(
-        url: URL, into client: TranslationClient
+        url: URL, into client: any LiveTranslationSession
     ) async throws {
         let file = try AVAudioFile(forReading: url)
         let resampler = try Resampler(sourceFormat: file.processingFormat)

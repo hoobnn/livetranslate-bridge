@@ -320,7 +320,7 @@ private struct HistoryTranscript: View {
 
     private func rebuild() {
         var built: [SubtitleModel.VisibleEntry] = []
-        var previous: SubtitleModel.Direction?
+        var previous: SubtitleModel.Speaker?
         for turn in record.turns {
             let entry = SubtitleModel.Entry(
                 direction: turn.direction,
@@ -329,12 +329,13 @@ private struct HistoryTranscript: View {
                 isComplete: true,
                 startedAt: turn.startedAt
             )
+            entry.isAgent = turn.isAgent
             built.append(SubtitleModel.VisibleEntry(
                 entry: entry,
-                continuesRun: previous == turn.direction,
-                startsNewSpeaker: previous != nil && previous != turn.direction
+                continuesRun: previous == entry.speaker,
+                startsNewSpeaker: previous != nil && previous != entry.speaker
             ))
-            previous = turn.direction
+            previous = entry.speaker
         }
         rows = built
     }

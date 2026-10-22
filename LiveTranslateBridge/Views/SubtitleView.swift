@@ -208,6 +208,9 @@ struct SubtitleView: View {
 
             GlassEffectContainer(spacing: Theme.spacing8) {
                 HStack(spacing: Theme.spacing8) {
+                    if model.mode == .translate {
+                        AgentButton(model: model)
+                    }
                     AudioRoutingButton(model: model, isPresented: $isShowingAudio)
 
                     if model.isRunning, model.mode == .translate {
@@ -683,7 +686,7 @@ struct EntryCard: View {
             // margin rather than trailing off toward the board's middle.
             if isLocal, showsTime { timeLabel }
 
-            Text(entry.direction.label)
+            Text(entry.isAgent ? t("agent.label") : entry.direction.label)
                 .font(.App.eyebrow)
                 .textCase(.uppercase)
                 .tracking(0.6)

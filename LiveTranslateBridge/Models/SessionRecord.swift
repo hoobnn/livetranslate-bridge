@@ -17,6 +17,9 @@ nonisolated struct SessionRecord: Codable, Identifiable, Hashable, Sendable {
         var startedAt: Date
         var transcript: String
         var translation: String
+        /// Spoken by the call agent on our behalf. Absent from sessions
+        /// saved before the agent existed, which read back as `false`.
+        var isAgent = false
     }
 
     let id: UUID
@@ -29,6 +32,21 @@ nonisolated struct SessionRecord: Codable, Identifiable, Hashable, Sendable {
     var turns: [Turn]
 
     var duration: TimeInterval { max(0, endedAt.timeIntervalSince(startedAt)) }
+}
+
+nonisolated extension SessionRecord.Turn {
+    private enum CodingKeys: String, CodingKey {
+        case direction, startedAt, transcript, translation, isAgent
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        direction = try container.decode(SubtitleModel.Direction.self, forKey: .direction)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        transcript = try container.decode(String.self, forKey: .transcript)
+        translation = try container.decode(String.self, forKey: .translation)
+        isAgent = try container.decodeIfPresent(Bool.self, forKey: .isAgent) ?? false
+    }
 }
 
 nonisolated extension SubtitleModel.Direction: Codable {}

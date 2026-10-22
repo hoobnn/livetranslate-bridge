@@ -198,6 +198,12 @@ final class SubtitleModel {
         private(set) var isVisible = false
 
         var isComplete = false
+        /// Spoken by the call agent rather than by the user.
+        var isAgent = false
+
+        /// Who the turn belongs to on the board: the agent's turns on our
+        /// side are a different speaker from our own.
+        var speaker: Speaker { Speaker(direction: direction, isAgent: isAgent) }
         var sourceComplete = false
         var translationComplete = false
         var responseStatus: String?
@@ -311,8 +317,10 @@ final class SubtitleModel {
     /// they carry a key and get localized at display time.
     enum StartFailure: String, Equatable, Sendable {
         case missingCredentials = "error.noCredentials"
+        case missingDoubaoCredentials = "error.noDoubaoCredentials"
         case unsupportedSystem = "error.unsupportedOS"
         case sameLanguages = "error.sameLanguages"
+        case unsupportedLanguage = "error.unsupportedLanguage"
 
         @MainActor
         var message: String { t(rawValue) }
@@ -340,12 +348,18 @@ final class SubtitleModel {
 
     @ObservationIgnored private var terminationObserver: (any NSObjectProtocol)?
 
+    nonisolated struct Speaker: Equatable, Sendable {
+        let direction: Direction
+        let isAgent: Bool
+    }
+
     private(set) var entries: [Entry] = []
     private struct ArchivedEntry {
         let direction: Direction
         let transcript: String
         let translation: String
         let startedAt: Date
+        let isAgent: Bool
     }
     @ObservationIgnored private var archivedEntries: [ArchivedEntry] = []
     @ObservationIgnored private var liveEntries: [Direction: Entry] = [:]
@@ -376,14 +390,14 @@ final class SubtitleModel {
     /// label with nothing in between to justify it.
     var visibleEntries: [VisibleEntry] {
         var rows: [VisibleEntry] = []
-        var previous: Direction?
+        var previous: Speaker?
         for entry in entries.suffix(Self.renderedEntryLimit) where !entry.isEmpty {
             rows.append(VisibleEntry(
                 entry: entry,
-                continuesRun: previous == entry.direction,
-                startsNewSpeaker: previous != nil && previous != entry.direction
+                continuesRun: previous == entry.speaker,
+                startsNewSpeaker: previous != nil && previous != entry.speaker
             ))
-            previous = entry.direction
+            previous = entry.speaker
         }
         return rows
     }
@@ -497,6 +511,12 @@ final class SubtitleModel {
             gains.localTranslation = gain
             applyLocalVolumes()
             requestSpeechIfUnmuted(.local, gain: gain)
+            // Muted, the agent would go on answering into silence: muting
+            // the far end's output is taking the call over.
+            if gain == 0, agent.phase.isActive {
+                agent.takeOver()
+                audioNotice = t("agent.outputMuted")
+            }
         }
     }
 
@@ -758,6 +778,52 @@ final class SubtitleModel {
         didSet { Defaults.region = region }
     }
 
+    /// Which service translates. Read when a session starts.
+    var provider: TranslationProvider = Defaults.provider {
+        didSet { Defaults.provider = provider }
+    }
+
+    /// Our language as last chosen, for settings that run without a model
+    /// (training the agent's voice from a sample of us speaking it).
+    static var savedMyLanguage: String { Defaults.myLanguage }
+
+    /// The AI that can hold the call for us. See `SubtitleAgent.swift`.
+    let agent = CallAgent()
+
+    /// Whether the next session starts with the agent answering the far end.
+    var agentEnabled = Defaults.agentEnabled {
+        didSet { Defaults.agentEnabled = agentEnabled }
+    }
+
+    /// What the agent may say: facts, prices, constraints, the script.
+    var agentMaterials = Defaults.agentMaterials {
+        didSet {
+            Defaults.agentMaterials = agentMaterials
+            agent.updateBrief(materials: agentMaterials, goal: agentGoal)
+        }
+    }
+
+    /// What the call is for, in a sentence.
+    var agentGoal = Defaults.agentGoal {
+        didSet {
+            Defaults.agentGoal = agentGoal
+            agent.updateBrief(materials: agentMaterials, goal: agentGoal)
+        }
+    }
+
+    /// Whether the chosen provider handles the languages this session uses.
+    ///
+    /// Transcribing, only the captured sides' languages matter; translating,
+    /// both do, and the provider may also restrict which pairs it offers.
+    var providerSupportsLanguages: Bool {
+        guard translates else {
+            return (!scope.captures(.remote) || provider.supports(theirLanguage))
+                && (!scope.captures(.local) || provider.supports(myLanguage))
+        }
+        return provider.supports(myLanguage) && provider.supports(theirLanguage)
+            && provider.supportsPair(myLanguage, theirLanguage)
+    }
+
     /// Term overrides, one "source = target" pair per line. A session
     /// setting: the list is part of the `session.update` that opens each
     /// socket, and the service rejects a second update once audio has begun.
@@ -818,7 +884,7 @@ final class SubtitleModel {
     @ObservationIgnored private var serverResponseStatus: [String: String] = [:]
     @ObservationIgnored private var retiredServerItems = Set<String>()
     @ObservationIgnored private var retiredServerOrder: [String] = []
-    private var clients: [Direction: TranslationClient] = [:]
+    private var clients: [Direction: any LiveTranslationSession] = [:]
     @ObservationIgnored private var eventBatchers: [Direction: TranslationEventBatcher] = [:]
     @ObservationIgnored private var startupTask: Task<Void, Never>?
     @ObservationIgnored private var routeWatcher: AudioRouteWatcher?
@@ -879,6 +945,10 @@ final class SubtitleModel {
             status = .failed(StartFailure.sameLanguages.message)
             return
         }
+        guard providerSupportsLanguages else {
+            status = .failed(StartFailure.unsupportedLanguage.message)
+            return
+        }
 
         isRunning = true
         sessionGeneration &+= 1
@@ -898,10 +968,11 @@ final class SubtitleModel {
         let inputUID = inputDeviceUID
         let outputUID = outputDeviceUID
         let remoteOutputUID = remoteOutputDeviceUID
+        let provider = provider
         startupTask = Task { [weak self] in
             let prepared = await Task.detached(priority: .userInitiated) {
                 (
-                    CredentialStore.load(),
+                    CredentialStore.load(for: provider),
                     inputUID.isEmpty ? AudioInputDevice.systemDefault : AudioInputDevice.named(uid: inputUID),
                     AudioOutputDevice.named(uid: outputUID),
                     remoteOutputUID.isEmpty ? AudioOutputDevice.systemDefault : AudioOutputDevice.named(uid: remoteOutputUID)
@@ -911,7 +982,9 @@ final class SubtitleModel {
             guard prepared.0.isComplete else {
                 self.isRunning = false
                 self.stopWatchingRoutes()
-                self.status = .failed(StartFailure.missingCredentials.message)
+                self.status = .failed(provider == .doubao
+                    ? StartFailure.missingDoubaoCredentials.message
+                    : StartFailure.missingCredentials.message)
                 return
             }
             await self.startPrepared(
@@ -925,7 +998,7 @@ final class SubtitleModel {
     }
 
     private func startPrepared(
-        credentials: CredentialStore.Credentials,
+        credentials: CredentialStore.ForProvider,
         inputDevice: AudioInputDevice?,
         localOutputDevice: AudioOutputDevice?,
         remoteOutputDevice: AudioOutputDevice?,
@@ -1024,13 +1097,19 @@ final class SubtitleModel {
                 wantsAudio: wantsAudio,
                 // One speaker — us — holds this stream for the whole call, so
                 // cloning once and reusing the timbre is both enough and
-                // steadier than re-cloning per reply.
-                voice: clonesVoice && wantsAudio ? .cloneOnce : .preset
+                // steadier than re-cloning per reply. A voice trained ahead of
+                // time is steadier still, and is the one the AI agent speaks
+                // in, so taking over a call does not change how we sound.
+                voice: wantsAudio ? localVoice(credentials) : .preset
             )
             clients[.local] = uplink
             uplinkPath.install(client: uplink, gatesMicrophone: gatesMicrophoneSilence)
             uplink.connect()
         }
+
+        await beginAgentIfRequested(credentials: credentials, localRouteReady: localRouteReady,
+                                    resuming: preserveTranscript)
+        guard isRunning, sessionGeneration == generationAtStart else { return }
 
         let session = CallAudioSession(sourceBundleID: sourceBundleID)
         session.capturesUplink = scope.captures(.local)
@@ -1129,6 +1208,7 @@ final class SubtitleModel {
         startupTask = nil
         session?.stop()
         session = nil
+        agent.end()
         for client in clients.values { client.close() }
         clients.removeAll()
         eventBatchers.removeAll()
@@ -1184,10 +1264,12 @@ final class SubtitleModel {
     private var boardTurns: [SessionRecord.Turn] {
         archivedEntries.map {
             SessionRecord.Turn(direction: $0.direction, startedAt: $0.startedAt,
-                               transcript: $0.transcript, translation: $0.translation)
+                               transcript: $0.transcript, translation: $0.translation,
+                               isAgent: $0.isAgent)
         } + entries.filter { !$0.isEmpty }.map {
             SessionRecord.Turn(direction: $0.direction, startedAt: $0.startedAt,
-                               transcript: $0.transcript, translation: $0.translation)
+                               transcript: $0.transcript, translation: $0.translation,
+                               isAgent: $0.isAgent)
         }
     }
 
@@ -1356,23 +1438,40 @@ final class SubtitleModel {
 
     private func makeClient(
         direction: Direction,
-        credentials: CredentialStore.Credentials,
+        credentials: CredentialStore.ForProvider,
         targetLanguage: String?,
         sourceLanguage: String?,
         wantsAudio: Bool,
         voice: TranslationClient.Config.Voice = .preset
-    ) -> TranslationClient {
-        let config = TranslationClient.Config(
-            apiKey: credentials.apiKey,
-            workspaceID: credentials.workspaceID,
-            region: region,
-            targetLanguage: targetLanguage,
-            sourceLanguage: sourceLanguage,
-            wantsAudio: wantsAudio,
-            phrases: glossary,
-            voice: voice
-        )
-        let client = TranslationClient(config: config, diagnosticLabel: direction.rawValue)
+    ) -> any LiveTranslationSession {
+        let client: any LiveTranslationSession
+        switch credentials {
+        case .qwen(let credentials):
+            let config = TranslationClient.Config(
+                apiKey: credentials.apiKey,
+                workspaceID: credentials.workspaceID,
+                region: region,
+                targetLanguage: targetLanguage,
+                sourceLanguage: sourceLanguage,
+                wantsAudio: wantsAudio,
+                phrases: glossary,
+                voice: voice
+            )
+            client = TranslationClient(config: config, diagnosticLabel: direction.rawValue)
+        case .doubao(let credentials):
+            let config = DoubaoTranslationClient.Config(
+                appID: credentials.appID,
+                accessToken: credentials.accessToken,
+                // Doubao does not detect the source; the pair always names it.
+                sourceLanguage: sourceLanguage ?? (direction == .remote ? theirLanguage : myLanguage),
+                targetLanguage: targetLanguage,
+                wantsAudio: wantsAudio,
+                phrases: glossary,
+                voice: voice,
+                presetSpeakerID: credentials.speakerID
+            )
+            client = DoubaoTranslationClient(config: config, diagnosticLabel: direction.rawValue)
+        }
         let generation = sessionGeneration
         let playback = playbackPath(for: direction)
         let playbackToken = playback.token
@@ -1400,6 +1499,7 @@ final class SubtitleModel {
     }
 
     private func handle(_ event: TranslationClient.Event, from direction: Direction) {
+        observeForAgent(event, from: direction)
         switch event {
         case .identified(let identity, let payload):
             handleServerEvent(payload, identity: identity, direction: direction)
@@ -1584,8 +1684,8 @@ final class SubtitleModel {
         // sits above it never changes afterwards, because entries are only
         // ever appended here and removed by `seal` — which repairs them.
         if let previous = entries.last {
-            entry.continuesRun = previous.direction == direction
-            entry.startsNewSpeaker = previous.direction != direction
+            entry.continuesRun = previous.speaker == entry.speaker
+            entry.startsNewSpeaker = previous.speaker != entry.speaker
         }
         entries.append(entry)
         liveEntries[direction] = entry
@@ -1647,7 +1747,8 @@ final class SubtitleModel {
                 direction: $0.direction,
                 transcript: $0.transcript,
                 translation: $0.translation,
-                startedAt: $0.startedAt
+                startedAt: $0.startedAt,
+                isAgent: $0.isAgent
             )
         })
         entries.removeFirst(completedPrefix.count)
@@ -1659,9 +1760,9 @@ final class SubtitleModel {
     private func repairRunFlags(at index: Int) {
         guard entries.indices.contains(index) else { return }
         let entry = entries[index]
-        let previous = index > 0 ? entries[index - 1].direction : nil
-        let continues = previous == entry.direction
-        let startsNew = previous != nil && previous != entry.direction
+        let previous = index > 0 ? entries[index - 1].speaker : nil
+        let continues = previous == entry.speaker
+        let startsNew = previous != nil && previous != entry.speaker
         // Guarded: a linked item repairs the whole board, and an unguarded
         // write is an observation event per turn even when nothing moved.
         if entry.continuesRun != continues { entry.continuesRun = continues }
@@ -1797,4 +1898,134 @@ extension SubtitleModel {
         }.filter { !$0.value.isEmpty }
         serverResponseStatus = serverResponseStatus.filter { serverResponses[$0.key] != nil }
     }
+}
+
+// MARK: - call agent
+
+extension SubtitleModel {
+    /// The voice trained from the user's own sample, when the session runs on
+    /// Doubao and one is configured.
+    /// The voice our translated speech goes out in. With the agent armed it
+    /// is the agent's own voice whatever the cloning switch says: the far end
+    /// must not hear the timbre change when we take the call over.
+    private func localVoice(_ credentials: CredentialStore.ForProvider) -> TranslationClient.Config.Voice {
+        if let trained = trainedVoiceID(credentials), clonesVoice || agentEnabled {
+            return .cloned(id: trained)
+        }
+        // Without a trained voice the agent speaks the stock one; so do we.
+        if agentEnabled { return .preset }
+        return clonesVoice ? .cloneOnce : .preset
+    }
+
+    private func trainedVoiceID(_ credentials: CredentialStore.ForProvider) -> String? {
+        guard case .doubao(let doubao) = credentials, !doubao.cloneSpeakerID.isEmpty else { return nil }
+        return doubao.cloneSpeakerID
+    }
+
+    /// Starts the agent for this session if it was asked for and everything
+    /// it needs is in place; otherwise says what is missing and runs the
+    /// session without it, since a call that goes ahead untranslated would be
+    /// worse than one without the agent.
+    fileprivate func beginAgentIfRequested(
+        credentials: CredentialStore.ForProvider, localRouteReady: Bool, resuming: Bool
+    ) async {
+        agent.end()
+        guard agentEnabled else { return }
+        // Both lanes: the remote one is what it answers, and the local
+        // one's output route is where its replies are played.
+        guard translates, scope.captures(.remote), scope.captures(.local) else {
+            audioNotice = t("agent.needsTranslation"); return
+        }
+        // Our own translated speech has to come out in the agent's voice,
+        // and only Doubao's interpretation can speak a Doubao-trained one.
+        guard case .doubao = credentials else { audioNotice = t("agent.needsDoubao"); return }
+        guard localRouteReady else { audioNotice = t("agent.needsOutput"); return }
+        // Replies go through the same channel as our translation; at zero
+        // gain the far end would hear none of them while the board shows
+        // them as said.
+        guard gains.localTranslation > 0 else { audioNotice = t("agent.outputMuted"); return }
+        let (chat, speech) = await Task.detached(priority: .userInitiated) {
+            (CredentialStore.loadAgent(), CredentialStore.loadDoubao())
+        }.value
+        guard isRunning else { return }
+        guard chat.isComplete else { audioNotice = t("agent.noChatCredentials"); return }
+        guard speech.isComplete else { audioNotice = t("agent.noSpeechCredentials"); return }
+        let speaker = speech.cloneSpeakerID.isEmpty ? speech.speakerID : speech.cloneSpeakerID
+        guard !speaker.isEmpty else { audioNotice = t("agent.noVoice"); return }
+
+        let playback = localPlaybackPath
+        // The player's queue hook records what it is handed, so the agent's
+        // speech lands in the session recording without recording it here.
+        agent.onAudio = { pcm in playback.enqueue(pcm) }
+        agent.onSpeechEnd = { playback.audioEvent(.audioComplete) }
+        agent.onInterrupt = { playback.interrupt() }
+        agent.onTurn = { [weak self] turn in
+            guard let self else { return }
+            self.appendAgentTurn(turn)
+            if turn.hangsUp { self.audioNotice = t("agent.finished") }
+        }
+        agent.onTurnWithdrawn = { [weak self] turn in self?.withdrawAgentTurn(turn) }
+        agent.begin(.init(
+            materials: agentMaterials, goal: agentGoal,
+            theirLanguage: theirLanguage, myLanguage: myLanguage,
+            chat: chat, speech: speech, speakerID: speaker
+        ), resuming: resuming)
+    }
+
+    /// Feeds the agent what the call is hearing. The far end's finished
+    /// sentences are what it answers; anything recognised from our own
+    /// microphone means we have taken the floor.
+    fileprivate func observeForAgent(_ event: TranslationClient.Event, from direction: Direction) {
+        guard agent.phase != .off else { return }
+        switch (direction, event.payload) {
+        case (.remote, .speechStarted):
+            agent.noteRemoteSpeechStarted()
+        case (.remote, .transcriptComplete(let text)):
+            agent.noteRemote(text)
+        case (.local, .speechStarted), (.local, .transcript), (.local, .transcriptDelta):
+            agent.noteLocalSpeech()
+        case (.local, .translationComplete(let text)):
+            agent.noteLocalSpeech()
+            // A sentence translated in parts is re-sent whole as each part
+            // lands; the card it belongs to keeps it one thing we said.
+            var utterance: String?
+            if case .identified(let identity, _) = event, let item = identity.itemID {
+                utterance = "\(identity.streamID)/\(item)"
+            }
+            agent.noteLocal(text, utterance: utterance)
+        default:
+            break
+        }
+    }
+
+    /// The agent's turn on the board, on our side: what the far end heard
+    /// as the translation, and its gloss in our language under it.
+    private func appendAgentTurn(_ turn: CallAgent.Turn) {
+        let entry = Entry(direction: .local, transcript: turn.gloss,
+                          translation: turn.say, isComplete: true)
+        entry.isAgent = true
+        entry.sourceComplete = true
+        entry.translationComplete = true
+        entries.append(entry)
+        repairRunFlags(at: entries.count - 1)
+        noteLiveTextChanged()
+        trimResidentEntries()
+    }
+
+    /// A turn the far end never heard — synthesis failed or was cut off
+    /// before its first sound — comes off the board again.
+    private func withdrawAgentTurn(_ turn: CallAgent.Turn) {
+        guard let index = entries.lastIndex(where: {
+            $0.isAgent && $0.translation == turn.say && $0.transcript == turn.gloss
+        }) else { return }
+        entries.remove(at: index)
+        repairRunFlags(at: index)
+        noteLiveTextChanged()
+    }
+
+    #if DEBUG
+    func observeForAgentForTesting(_ event: TranslationClient.Event, from direction: Direction) {
+        observeForAgent(event, from: direction)
+    }
+    #endif
 }
