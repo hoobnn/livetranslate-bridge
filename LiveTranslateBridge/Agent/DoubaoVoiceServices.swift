@@ -145,11 +145,12 @@ nonisolated enum DoubaoVoiceServices {
     /// console. Training takes seconds to minutes; poll `cloneStatus`.
     static func uploadSample(
         _ audio: Data, format: String, speakerID: String, transcript: String = "",
-        credentials: CredentialStore.DoubaoCredentials
+        language: String? = nil, credentials: CredentialStore.DoubaoCredentials
     ) async throws {
         try requireAppID(credentials)
         let body = uploadBody(audio, format: format, speakerID: speakerID,
-                              transcript: transcript, appID: credentials.appID)
+                              transcript: transcript, language: language,
+                              appID: credentials.appID)
         let reply = try await postJSON("api/v1/mega_tts/audio/upload", body, credentials)
         try checkBaseResponse(reply)
     }
@@ -157,12 +158,13 @@ nonisolated enum DoubaoVoiceServices {
     /// What the sample upload sends. The transcript of what the sample
     /// says is optional, but lets the service check the recording against it.
     static func uploadBody(
-        _ audio: Data, format: String, speakerID: String, transcript: String, appID: String
+        _ audio: Data, format: String, speakerID: String, transcript: String,
+        language: String? = nil, appID: String
     ) -> [String: Any] {
         var sample: [String: Any] = ["audio_bytes": audio.base64EncodedString(), "audio_format": format]
         let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty { sample["text"] = text }
-        return [
+        var body: [String: Any] = [
             "appid": appID,
             "speaker_id": speakerID,
             "audios": [sample],
@@ -170,7 +172,13 @@ nonisolated enum DoubaoVoiceServices {
             // Voice cloning 2.0.
             "model_type": 4,
         ]
+        // The service assumes Chinese unless told otherwise.
+        if let language, let code = sampleLanguages[language] { body["language"] = code }
+        return body
     }
+
+    /// The enrollment's `language` enum, for the languages it trains.
+    static let sampleLanguages = ["zh": 0, "en": 1, "ja": 2, "es": 3, "id": 4, "pt": 5]
 
     static func cloneStatus(
         speakerID: String, credentials: CredentialStore.DoubaoCredentials

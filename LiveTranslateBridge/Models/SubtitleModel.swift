@@ -511,6 +511,12 @@ final class SubtitleModel {
             gains.localTranslation = gain
             applyLocalVolumes()
             requestSpeechIfUnmuted(.local, gain: gain)
+            // Muted, the agent would go on answering into silence: muting
+            // the far end's output is taking the call over.
+            if gain == 0, agent.phase.isActive {
+                agent.takeOver()
+                audioNotice = t("agent.outputMuted")
+            }
         }
     }
 
@@ -776,6 +782,10 @@ final class SubtitleModel {
     var provider: TranslationProvider = Defaults.provider {
         didSet { Defaults.provider = provider }
     }
+
+    /// Our language as last chosen, for settings that run without a model
+    /// (training the agent's voice from a sample of us speaking it).
+    static var savedMyLanguage: String { Defaults.myLanguage }
 
     /// The AI that can hold the call for us. See `SubtitleAgent.swift`.
     let agent = CallAgent()

@@ -583,6 +583,8 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         case .ttsResponse:
             if !response.data.isEmpty { emit(.audio(response.data)) }
         case .ttsSentenceEnd:
+            // The closing frame may carry the sentence's last audio.
+            if !response.data.isEmpty { emit(.audio(response.data)) }
             emit(.audioComplete)
         case .ttsSentenceStart, .usageResponse, .audioMuted:
             break

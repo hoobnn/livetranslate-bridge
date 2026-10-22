@@ -237,6 +237,8 @@ struct AgentSettings: View {
     private func upload(_ url: URL) {
         let speech = speech
         let transcript = sampleTranscript
+        // The sample is the user speaking their own language.
+        let language = SubtitleModel.savedMyLanguage
         isCloning = true
         cloneMessage = t("agent.voice.uploading")
         Task {
@@ -249,7 +251,7 @@ struct AgentSettings: View {
                 try await DoubaoVoiceServices.uploadSample(
                     data, format: format.isEmpty ? "wav" : format,
                     speakerID: speech.cloneSpeakerID, transcript: transcript,
-                    credentials: speech
+                    language: language, credentials: speech
                 )
                 cloneMessage = t("agent.voice.uploaded")
             } catch {

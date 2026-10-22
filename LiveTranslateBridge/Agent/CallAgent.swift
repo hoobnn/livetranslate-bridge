@@ -102,6 +102,11 @@ final class CallAgent {
         generation &+= 1
         // A call we had taken over stays ours across a rebuild.
         phase = resuming && endedHandedOver ? .handedOver : .listening
+        // A reply the rebuild cut off is still owed.
+        if resuming, phase == .listening,
+           !unanswered.isEmpty || history.last?.role == .user {
+            scheduleReply(after: replyDelay)
+        }
     }
 
     func end() {

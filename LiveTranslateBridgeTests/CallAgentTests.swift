@@ -194,6 +194,11 @@ struct AgentServiceParsingTests {
                                                      transcript: transcript, appID: "a")
             return (body["audios"] as? [[String: Any]])?.first
         }
+        let english = DoubaoVoiceServices.uploadBody(Data([1]), format: "wav", speakerID: "S_1",
+                                                    transcript: "", language: "en", appID: "a")
+        #expect(english["language"] as? Int == 1)
+        #expect(DoubaoVoiceServices.uploadBody(Data([1]), format: "wav", speakerID: "S_1",
+                                               transcript: "", appID: "a")["language"] == nil)
         #expect(sample("  ")?["text"] == nil)
         #expect(sample("你好，今天天气不错")?["text"] as? String == "你好，今天天气不错")
     }
