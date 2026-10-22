@@ -91,6 +91,19 @@ struct CallAgentTests {
         agent.end()
     }
 
+    @Test func aCallWeTookOverStaysOursAcrossARebuild() {
+        let agent = idleAgent()
+        agent.takeOver()
+        agent.end()
+        agent.end()
+        agent.begin(config(), resuming: true)
+        #expect(agent.phase == .handedOver)
+        agent.end()
+        agent.begin(config())
+        #expect(agent.phase == .listening)
+        agent.end()
+    }
+
     @Test func synthesisLanguagesUseTheServicesCodes() {
         #expect(CallAgent.synthesisLanguage("zh") == "zh-cn")
         #expect(CallAgent.synthesisLanguage("es") == "es-mx")

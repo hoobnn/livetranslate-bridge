@@ -375,6 +375,23 @@
         }
       }
     },
+    "agent.outputMuted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The AI agent is off: the translation volume for \"What others hear\" is zero, so they would not hear its replies"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 代聊未启用：「对方听到」的译文音量为 0，对方会听不到它的回答"
+          }
+        }
+      }
+    },
     "agent.speakFirst" : {
       "extractionState" : "manual",
       "localizations" : {

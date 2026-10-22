@@ -83,6 +83,8 @@ final class CallAgent {
     /// sits, so a sentence re-sent as it grows replaces itself.
     @ObservationIgnored private var lastLocal: (utterance: String, index: Int)?
     @ObservationIgnored private var replyTask: Task<Void, Never>?
+    /// Whether the user held the call when it last ended, for `resuming`.
+    @ObservationIgnored private var endedHandedOver = false
     /// Bumped by everything that invalidates a reply in flight.
     @ObservationIgnored private var generation = 0
 
@@ -98,10 +100,14 @@ final class CallAgent {
         }
         lastLocal = nil
         generation &+= 1
-        phase = .listening
+        // A call we had taken over stays ours across a rebuild.
+        phase = resuming && endedHandedOver ? .handedOver : .listening
     }
 
     func end() {
+        // Ending twice (stop, then the restart's own reset) must not
+        // forget how the first one found the call.
+        if phase != .off { endedHandedOver = phase == .handedOver }
         cancelReply()
         config = nil
         phase = .off

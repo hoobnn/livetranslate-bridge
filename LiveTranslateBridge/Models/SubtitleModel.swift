@@ -1921,13 +1921,19 @@ extension SubtitleModel {
     ) async {
         agent.end()
         guard agentEnabled else { return }
-        guard translates, scope.captures(.remote) else {
+        // Both lanes: the remote one is what it answers, and the local
+        // one's output route is where its replies are played.
+        guard translates, scope.captures(.remote), scope.captures(.local) else {
             audioNotice = t("agent.needsTranslation"); return
         }
         // Our own translated speech has to come out in the agent's voice,
         // and only Doubao's interpretation can speak a Doubao-trained one.
         guard case .doubao = credentials else { audioNotice = t("agent.needsDoubao"); return }
         guard localRouteReady else { audioNotice = t("agent.needsOutput"); return }
+        // Replies go through the same channel as our translation; at zero
+        // gain the far end would hear none of them while the board shows
+        // them as said.
+        guard gains.localTranslation > 0 else { audioNotice = t("agent.outputMuted"); return }
         let (chat, speech) = await Task.detached(priority: .userInitiated) {
             (CredentialStore.loadAgent(), CredentialStore.loadDoubao())
         }.value
@@ -1966,7 +1972,7 @@ extension SubtitleModel {
             agent.noteRemoteSpeechStarted()
         case (.remote, .transcriptComplete(let text)):
             agent.noteRemote(text)
-        case (.local, .transcript), (.local, .transcriptDelta):
+        case (.local, .speechStarted), (.local, .transcript), (.local, .transcriptDelta):
             agent.noteLocalSpeech()
         case (.local, .translationComplete(let text)):
             agent.noteLocalSpeech()
