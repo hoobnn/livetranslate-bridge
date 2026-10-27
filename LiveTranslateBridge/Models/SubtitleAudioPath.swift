@@ -17,6 +17,7 @@ extension SubtitleModel {
     nonisolated final class AudioPath: @unchecked Sendable {
         private let direction: Direction
         private var client: (any LiveTranslationSession)?
+        private var pcmObserver: (@Sendable (Data) -> Void)?
         private var resampler: Resampler?
         private var sourceFormat: AVAudioFormat?
         /// Converted PCM not yet long enough to make a chunk.
@@ -70,6 +71,12 @@ extension SubtitleModel {
             queue.perform { [weak self] in self?.recorder = recorder }
         }
 
+        /// Realtime conversational VAD needs the quiet spans as well as speech.
+        /// This tap receives converted PCM before the translation silence gate.
+        func observePCM(_ observer: (@Sendable (Data) -> Void)?) {
+            queue.perform { [weak self] in self?.pcmObserver = observer }
+        }
+
         private static func makeGate(direction: Direction, gatesMicrophone: Bool) -> SilenceGate? {
             switch direction {
             case .remote: return .digitalSilence()
@@ -98,7 +105,7 @@ extension SubtitleModel {
                 if resampler == nil { BridgeLog.audio.error("resampler could not be built") }
             }
             guard let resampler else { return }
-            guard client != nil || recorder != nil else {
+            guard client != nil || recorder != nil || pcmObserver != nil else {
                 report(dropped: "no client installed")
                 return
             }
@@ -109,6 +116,7 @@ extension SubtitleModel {
             // Before the silence gate, which would cut the quiet stretches
             // out of the recording's timeline.
             recorder?.append(pcm, to: .original(direction))
+            pcmObserver?(pcm)
             guard let client else { return }
             report(sent: pcm)
             stage(pcm, to: client)

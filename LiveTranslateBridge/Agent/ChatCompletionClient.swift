@@ -34,14 +34,16 @@ nonisolated enum ChatCompletionClient {
         }
         guard let choices = object["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
+              let content = message["content"] as? String,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ServiceError(message: "chat reply had no content")
         }
         return content
     }
 
     static func complete(
-        _ messages: [Message], credentials: CredentialStore.AgentCredentials
+        _ messages: [Message], credentials: CredentialStore.AgentCredentials,
+        session: URLSession = .shared
     ) async throws -> String {
         guard let base = URL(string: credentials.baseURL) else {
             throw ServiceError(message: "invalid base URL")
@@ -54,7 +56,7 @@ nonisolated enum ChatCompletionClient {
         request.httpBody = try JSONSerialization.data(
             withJSONObject: requestBody(model: credentials.model, messages: messages)
         )
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw ServiceError(
                 message: "HTTP \(http.statusCode): \(String(decoding: data.prefix(400), as: UTF8.self))"

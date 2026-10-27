@@ -87,11 +87,17 @@ Doubao translates between Chinese, English, Japanese, French, German and Spanish
 
 ### AI agent
 
-With the agent on, an AI answers the call from reference material you provide, in the other side's language and in your voice, while the board shows both sides with translations. Speak or press Take Over at any time to step in; your words are still translated, in the same voice. Hand Back lets the AI carry on, remembering what you said.
+The AI answers in the other side's language using your goal and reference material. Doubao end-to-end realtime speech is the default: it understands speech, generates answers and produces speech without a separate chat model. This integration currently supports Chinese–English calls. AI subtitles show the spoken language only; the translation service still provides bilingual subtitles for the caller.
 
-1. Settings › AI agent: set a chat model (Volcengine Ark by default; any OpenAI-compatible `chat/completions` service works) and a voice clone ID (starts with S_, from Voice Cloning in the Doubao Speech console), then upload 10–30 seconds of yourself speaking to train it.
-2. In Settings › Credentials, switch to Doubao and enter Doubao Speech credentials.
+1. Settings › Credentials: enter a Doubao Speech API key with End-to-end Realtime Speech 3.0 access, leaving App ID empty. Select Doubao as the translation service too if you use it for simultaneous interpretation.
+2. Settings › AI agent: select Doubao end-to-end realtime speech. Jupiter is the default voice; you can enter another voice ID supported by this service. Its voice is configured separately from interpretation and voice cloning.
 3. On the board, open AI agent, write the goal and the material, turn on "Let the AI hold this call", and start the session. A "What others hear" output device is required (see below).
+
+To use your own voice, enter a console-allocated `S_…` voice ID in the training section on the same settings page, select a Chinese or English recording (14–30 seconds of WAV recommended, up to 10 MB), upload it and query its status. Once ready, explicitly apply it to realtime calls; it takes effect on the next session. V3 enrollment works with an API key that has voice and voice-cloning access. Postpaid custom names are also supported, but first formal synthesis incurs a slot charge and locks the voice; the app never activates it automatically. An uncertain upload must be queried before retraining. See the [voice training validation record](docs/doubao-realtime-voice-training-validation-2026-10-23.md) for this account's permission results.
+
+Speak or press Take Over to step in; your words continue to be translated. Hand Back briefly connects a fresh speech session with recent complete conversation pairs and the manual takeover notes, then resumes listening. Goal and material edits made during a call apply on the next handback. The AI and translated human speech may use different voices.
+
+The Chat + Doubao TTS option remains available with an OpenAI-compatible `chat/completions` endpoint, API key and model name. It provides a Chinese gloss for AI replies and supports separately trained voice clones. See the [realtime speech validation report](docs/doubao-realtime-integration-validation-2026-10-23.md) for real-service simulation with no speaker playback.
 
 ## Sending translated speech into a meeting or call
 
@@ -108,7 +114,7 @@ You need a loopback audio device such as [BlackHole](https://existential.audio/b
 Yes. Audio is captured per app, not through any meeting-app integration, so just pick the meeting app (or the browser it runs in) as the source. Continuity calls are played by the system process `avconferenced`, which is the default source (see the [call audio findings](docs/findings.md), in Chinese).
 
 **Does it record calls? Where does my data go?**
-Not by default. Audio is streamed to Model Studio under your own account for translation. By default only subtitle text stays on your Mac, and you can turn that off or delete it anytime. Audio is saved locally only if you turn on "Also save audio recordings".
+Not by default. Audio is streamed to your selected Model Studio or Doubao service. The AI agent uses Doubao realtime speech or your configured Chat/TTS services, depending on the mode. By default only subtitle text stays on your Mac, and you can turn that off or delete it anytime. Audio is saved locally only if you turn on "Also save audio recordings".
 
 **How much delay is there?**
 Translated speech is 1–3 seconds behind the original and speeds up when it falls behind.

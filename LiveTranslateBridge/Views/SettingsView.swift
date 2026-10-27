@@ -23,7 +23,7 @@ struct SettingsView: View {
                 TranslationSettings(model: model)
             }
             Tab(t("agent.title"), systemImage: "person.wave.2") {
-                AgentSettings()
+                AgentSettings(model: model)
             }
         }
         .frame(width: 580, height: 560)

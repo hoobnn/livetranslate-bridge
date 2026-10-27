@@ -60,11 +60,10 @@ nonisolated enum DoubaoProtocol {
             format: "wav", codec: "raw", rate: 16_000, bits: 16, channel: 1
         )
 
-        /// What `TranslationPlayer` plays: 24 kHz mono signed 16-bit PCM.
-        /// Asking for exactly that keeps the synthesised speech on the same
-        /// path as every other provider's, with no decoder in between.
+        /// The service's 24 kHz PCM is Float32 (16 kHz alone is Int16).
+        /// `DoubaoTranslationClient` converts it to the player's Int16 PCM.
         static let target = AudioFormat(
-            format: "pcm", codec: nil, rate: 24_000, bits: 16, channel: 1
+            format: "pcm", codec: nil, rate: 24_000, bits: 32, channel: 1
         )
     }
 
@@ -104,8 +103,10 @@ nonisolated enum DoubaoProtocol {
         params.string(2, start.sourceLanguage)
         params.string(3, start.targetLanguage)
         params.string(4, start.speakerID)
-        if start.isCustomSpeaker { params.bool(5, true) }
-        params.string(6, start.ttsResourceID)
+        // The current official ast_service.proto reserves 5 for speech_rate
+        // and 6 for enable_source_language_detect.
+        if start.isCustomSpeaker { params.bool(7, true) }
+        params.string(8, start.ttsResourceID)
         if !start.glossary.isEmpty {
             var corpus = Writer()
             // Sorted so the same glossary always encodes to the same bytes,

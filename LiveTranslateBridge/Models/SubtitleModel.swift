@@ -332,8 +332,9 @@ final class SubtitleModel {
     /// A model built without a history directory keeps its sessions in memory
     /// only, which is what tests and previews get: nothing they do may land
     /// in the real app's history.
-    init(history: SessionHistory? = nil) {
+    init(history: SessionHistory? = nil, agent: CallAgent? = nil) {
         self.history = history ?? SessionHistory(directory: nil)
+        self.agent = agent ?? CallAgent()
         // Quitting mid-call calls no `stop()`, so the last few seconds of the
         // board would otherwise never reach the disk.
         terminationObserver = NotificationCenter.default.addObserver(
@@ -788,11 +789,19 @@ final class SubtitleModel {
     static var savedMyLanguage: String { Defaults.myLanguage }
 
     /// The AI that can hold the call for us. See `SubtitleAgent.swift`.
-    let agent = CallAgent()
+    let agent: CallAgent
 
     /// Whether the next session starts with the agent answering the far end.
     var agentEnabled = Defaults.agentEnabled {
         didSet { Defaults.agentEnabled = agentEnabled }
+    }
+
+    var agentBackend = Defaults.agentBackend {
+        didSet { Defaults.agentBackend = agentBackend }
+    }
+
+    var agentRealtimeVoice = Defaults.agentRealtimeVoice {
+        didSet { Defaults.agentRealtimeVoice = agentRealtimeVoice }
     }
 
     /// What the agent may say: facts, prices, constraints, the script.
@@ -1209,6 +1218,7 @@ final class SubtitleModel {
         session?.stop()
         session = nil
         agent.end()
+        downlinkPath.observePCM(nil)
         for client in clients.values { client.close() }
         clients.removeAll()
         eventBatchers.removeAll()
@@ -1565,14 +1575,25 @@ final class SubtitleModel {
     #if DEBUG
     static func withTemporaryDefaults(_ body: () -> Void) {
         let name = "LiveTranslateBridgeTests.\(UUID().uuidString)"
-        guard let suite = UserDefaults(suiteName: name) else { return body() }
+        guard let suite = MemoryDefaults(suiteName: name) else { return body() }
         let previous = Defaults.store
         Defaults.store = suite
-        defer {
-            Defaults.store = previous
-            suite.removePersistentDomain(forName: name)
-        }
+        defer { Defaults.store = previous }
         body()
+    }
+
+    /// Defaults that never reach disk. A real throwaway suite left an empty
+    /// plist in ~/Library/Preferences per test: removing the domain keeps the
+    /// file, and cfprefsd rewrites it even after it is deleted. The typed
+    /// accessors (`bool`, `string`, `double`, …) all route through these
+    /// three, and the unique suite name keeps anything that slipped past them
+    /// off the app's own domain.
+    private final class MemoryDefaults: UserDefaults {
+        private var values: [String: Any] = [:]
+
+        override func object(forKey defaultName: String) -> Any? { values[defaultName] }
+        override func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+        override func removeObject(forKey defaultName: String) { values[defaultName] = nil }
     }
 
     /// The defaults the preferences are currently read from, so a test can
@@ -1903,12 +1924,13 @@ extension SubtitleModel {
 // MARK: - call agent
 
 extension SubtitleModel {
-    /// The voice trained from the user's own sample, when the session runs on
-    /// Doubao and one is configured.
-    /// The voice our translated speech goes out in. With the agent armed it
-    /// is the agent's own voice whatever the cloning switch says: the far end
-    /// must not hear the timbre change when we take the call over.
+    /// Human speech uses the interpretation voice. Chat + TTS shares its
+    /// configured agent voice; realtime speech has a separate voice.
     private func localVoice(_ credentials: CredentialStore.ForProvider) -> TranslationClient.Config.Voice {
+        if agentEnabled, agentBackend == .doubaoRealtime {
+            if clonesVoice, let trained = trainedVoiceID(credentials) { return .cloned(id: trained) }
+            return clonesVoice ? .cloneOnce : .preset
+        }
         if let trained = trainedVoiceID(credentials), clonesVoice || agentEnabled {
             return .cloned(id: trained)
         }
@@ -1927,9 +1949,11 @@ extension SubtitleModel {
     /// session without it, since a call that goes ahead untranslated would be
     /// worse than one without the agent.
     fileprivate func beginAgentIfRequested(
-        credentials: CredentialStore.ForProvider, localRouteReady: Bool, resuming: Bool
+        credentials: CredentialStore.ForProvider, localRouteReady: Bool, resuming: Bool,
+        loadCredentials: (@Sendable () -> (CredentialStore.AgentCredentials, CredentialStore.DoubaoCredentials))? = nil
     ) async {
         agent.end()
+        downlinkPath.observePCM(nil)
         guard agentEnabled else { return }
         // Both lanes: the remote one is what it answers, and the local
         // one's output route is where its replies are played.
@@ -1938,20 +1962,34 @@ extension SubtitleModel {
         }
         // Our own translated speech has to come out in the agent's voice,
         // and only Doubao's interpretation can speak a Doubao-trained one.
-        guard case .doubao = credentials else { audioNotice = t("agent.needsDoubao"); return }
+        if agentBackend == .chatAndTTS, case .qwen = credentials {
+            audioNotice = t("agent.needsDoubao"); return
+        }
         guard localRouteReady else { audioNotice = t("agent.needsOutput"); return }
         // Replies go through the same channel as our translation; at zero
         // gain the far end would hear none of them while the board shows
         // them as said.
         guard gains.localTranslation > 0 else { audioNotice = t("agent.outputMuted"); return }
-        let (chat, speech) = await Task.detached(priority: .userInitiated) {
-            (CredentialStore.loadAgent(), CredentialStore.loadDoubao())
-        }.value
-        guard isRunning else { return }
-        guard chat.isComplete else { audioNotice = t("agent.noChatCredentials"); return }
+        if agentBackend == .doubaoRealtime,
+           Set([myLanguage, theirLanguage]) != Set(["zh", "en"]) {
+            audioNotice = t("agent.realtime.languages"); return
+        }
+        let generation = sessionGeneration
+        let backend = agentBackend
+        let load = loadCredentials ?? {
+            (backend == .chatAndTTS ? CredentialStore.loadAgent() : CredentialStore.AgentCredentials(),
+             CredentialStore.loadDoubao())
+        }
+        let (chat, speech) = await Task.detached(priority: .userInitiated, operation: load).value
+        guard isRunning, sessionGeneration == generation, !Task.isCancelled else { return }
+        if agentBackend == .chatAndTTS, !chat.isComplete {
+            audioNotice = t("agent.noChatCredentials"); return
+        }
         guard speech.isComplete else { audioNotice = t("agent.noSpeechCredentials"); return }
-        let speaker = speech.cloneSpeakerID.isEmpty ? speech.speakerID : speech.cloneSpeakerID
-        guard !speaker.isEmpty else { audioNotice = t("agent.noVoice"); return }
+        if agentBackend == .doubaoRealtime, !speech.appID.isEmpty {
+            audioNotice = t("agent.realtime.needsAPIKey"); return
+        }
+        let speaker = speech.agentSpeakerID
 
         let playback = localPlaybackPath
         // The player's queue hook records what it is handed, so the agent's
@@ -1965,11 +2003,14 @@ extension SubtitleModel {
             if turn.hangsUp { self.audioNotice = t("agent.finished") }
         }
         agent.onTurnWithdrawn = { [weak self] turn in self?.withdrawAgentTurn(turn) }
+        agent.onTurnUpdated = { [weak self] previous, next in self?.updateAgentTurn(previous, to: next) }
         agent.begin(.init(
             materials: agentMaterials, goal: agentGoal,
             theirLanguage: theirLanguage, myLanguage: myLanguage,
-            chat: chat, speech: speech, speakerID: speaker
+            chat: chat, speech: speech, speakerID: speaker,
+            backend: agentBackend, realtimeVoice: agentRealtimeVoice
         ), resuming: resuming)
+        downlinkPath.observePCM(agent.realtimeAudioSink())
     }
 
     /// Feeds the agent what the call is hearing. The far end's finished
@@ -2012,6 +2053,15 @@ extension SubtitleModel {
         trimResidentEntries()
     }
 
+    private func updateAgentTurn(_ previous: CallAgent.Turn, to next: CallAgent.Turn) {
+        guard let entry = entries.last(where: {
+            $0.isAgent && $0.translation == previous.say && $0.transcript == previous.gloss
+        }) else { return }
+        entry.translation = next.say
+        entry.transcript = next.gloss
+        noteLiveTextChanged()
+    }
+
     /// A turn the far end never heard — synthesis failed or was cut off
     /// before its first sound — comes off the board again.
     private func withdrawAgentTurn(_ turn: CallAgent.Turn) {
@@ -2024,8 +2074,24 @@ extension SubtitleModel {
     }
 
     #if DEBUG
+    /// Exercises production agent setup and playback routing with an offline
+    /// player and explicit fixtures, without accessing the user's keychain.
+    func beginAgentForTesting(
+        chat: CredentialStore.AgentCredentials, speech: CredentialStore.DoubaoCredentials,
+        player: TranslationPlayer? = nil, resuming: Bool = false
+    ) async {
+        localPlaybackPath.install(player)
+        await beginAgentIfRequested(credentials: .doubao(speech), localRouteReady: true,
+                                    resuming: resuming, loadCredentials: { (chat, speech) })
+    }
+
     func observeForAgentForTesting(_ event: TranslationClient.Event, from direction: Direction) {
         observeForAgent(event, from: direction)
+    }
+
+    func feedAgentAudioForTesting(_ buffer: AVAudioPCMBuffer) {
+        downlinkPath.enqueueForTesting(buffer)
+        downlinkPath.drainForTesting()
     }
     #endif
 }

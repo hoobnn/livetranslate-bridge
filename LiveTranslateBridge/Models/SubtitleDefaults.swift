@@ -24,6 +24,8 @@ extension SubtitleModel {
         private static let regionKey = "translationRegion"
         private static let providerKey = "translationProvider"
         private static let agentEnabledKey = "agentEnabled"
+        private static let agentBackendKey = "agentBackend"
+        private static let agentRealtimeVoiceKey = "agentRealtimeVoice"
         private static let agentMaterialsKey = "agentMaterials"
         private static let agentGoalKey = "agentGoal"
         private static let deviceKey = "translationOutputDeviceUID"
@@ -114,6 +116,23 @@ extension SubtitleModel {
         static var agentEnabled: Bool {
             get { store.bool(forKey: agentEnabledKey) }
             set { store.set(newValue, forKey: agentEnabledKey) }
+        }
+
+        static var agentBackend: CallAgent.Backend {
+            get {
+                store.string(forKey: agentBackendKey)
+                    .flatMap(CallAgent.Backend.init(rawValue:)) ?? .doubaoRealtime
+            }
+            set { store.set(newValue.rawValue, forKey: agentBackendKey) }
+        }
+
+        static var agentRealtimeVoice: String {
+            get {
+                let stored = store.string(forKey: agentRealtimeVoiceKey)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return stored.isEmpty ? DoubaoRealtimeClient.defaultVoice : stored
+            }
+            set { store.set(newValue, forKey: agentRealtimeVoiceKey) }
         }
 
         static var agentMaterials: String {

@@ -152,12 +152,14 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
     private var translationTarget = 0
     private var sourceText = ""
     private var translationText = ""
+    /// A usable start on the source clock; nil keeps untimed frames in order.
+    private var translationStartMS: Int32?
     private var sourceOpen = false
     private var translationOpen = false
     /// Source sentences finished without a translation of their own yet.
     private var untranslated: [Int] = []
-    /// When each recent source sentence started, on the source audio clock.
-    private var sourceStarts: [(segment: Int, startMS: Int32)] = []
+    /// Recent source intervals. Missing end times must not invent a duration.
+    private var sourceStarts: [(segment: Int, startMS: Int32, endMS: Int32?)] = []
     /// Completed translation text per recent card, for a sentence that was
     /// translated in more than one part.
     private var settledTranslations: [Int: String] = [:]
@@ -246,10 +248,10 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
     func waitUntilReady(timeout: TimeInterval) async -> Bool {
         await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             queue.async { [self] in
-                if isStarted { continuation.resume(returning: true); return }
                 if isRetired || (isFailed && !isReconnecting) {
                     continuation.resume(returning: false); return
                 }
+                if isStarted { continuation.resume(returning: true); return }
                 readyWaiters.append(continuation)
                 queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
                     self?.resolveReady(false)
@@ -286,6 +288,7 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         queue.async { [self] in
             isRetired = true
             isClosing = true
+            isStarted = false
             setFailed(true)
             sweepTimer?.cancel()
             sweepTimer = nil
@@ -578,13 +581,13 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
             guard translates else { break }
             if !translationOpen { beginTranslation(at: response.startTime) }
             translationText = Self.merge(translationText, response.text)
-            endTranslation()
+            endTranslation(at: response.endTime)
 
         case .ttsResponse:
-            if !response.data.isEmpty { emit(.audio(response.data)) }
+            guard emitAudio(response.data) else { return }
         case .ttsSentenceEnd:
             // The closing frame may carry the sentence's last audio.
-            if !response.data.isEmpty { emit(.audio(response.data)) }
+            guard emitAudio(response.data) else { return }
             emit(.audioComplete)
         case .ttsSentenceStart, .usageResponse, .audioMuted:
             break
@@ -594,18 +597,53 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         }
     }
 
+    /// Target PCM at 24 kHz is Float32 on the wire. Every consumer of our
+    /// shared audio event (player, recorder, call agent) takes Int16 instead.
+    private func emitAudio(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return true }
+        guard let pcm = Self.playerPCM(from: data) else {
+            fail("Doubao returned an incomplete Float32 audio sample")
+            return false
+        }
+        emit(.audio(pcm))
+        return true
+    }
+
+    static func playerPCM(from floatPCM: Data) -> Data? {
+        guard floatPCM.count.isMultiple(of: 4) else { return nil }
+        var pcm = Data(count: floatPCM.count / 2)
+        floatPCM.withUnsafeBytes { source in
+            pcm.withUnsafeMutableBytes { (destination: UnsafeMutableRawBufferPointer) in
+                for sample in 0..<(floatPCM.count / 4) {
+                    let bits = source.loadUnaligned(fromByteOffset: sample * 4, as: UInt32.self)
+                    let value = Float(bitPattern: UInt32(littleEndian: bits))
+                    let normalized = value.isFinite ? max(-1, min(1, value)) : 0
+                    let signed = Int16(clamping: Int((normalized * 32_768).rounded()))
+                    let encoded = UInt16(bitPattern: signed)
+                    destination[sample * 2] = UInt8(truncatingIfNeeded: encoded)
+                    destination[sample * 2 + 1] = UInt8(truncatingIfNeeded: encoded >> 8)
+                }
+            }
+        }
+        return pcm
+    }
+
     private func beginSource(at startMS: Int32) {
         if sourceOpen { endSource(at: startMS, translates: config.targetLanguage != nil) }
         sourceSegment += 1
         sourceText = ""
         sourceOpen = true
-        if startMS > 0 { sourceStarts.append((sourceSegment, startMS)) }
+        if startMS > 0 { sourceStarts.append((sourceSegment, startMS, nil)) }
         emit(.speechStarted, segment: sourceSegment, audioMS: Int(startMS))
     }
 
     private func endSource(at endMS: Int32, translates: Bool) {
         guard sourceOpen else { return }
         sourceOpen = false
+        if let index = sourceStarts.lastIndex(where: { $0.segment == sourceSegment }),
+           endMS >= sourceStarts[index].startMS {
+            sourceStarts[index].endMS = endMS
+        }
         emit(.speechStopped, segment: sourceSegment, audioMS: Int(endMS))
         emit(.transcriptComplete(sourceText), segment: sourceSegment)
         // Speech stopped is what lets the player catch up on a backlog.
@@ -623,10 +661,12 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
     private func beginTranslation(at startMS: Int32) {
         if translationOpen { endTranslation() }
         var card = translationTarget + 1
+        translationStartMS = nil
         if startMS > 0, let first = sourceStarts.first, let last = sourceStarts.last,
            startMS + 300 >= first.startMS, startMS <= last.startMS + 5_000 {
             let timed = sourceStarts.last { $0.startMS <= startMS + 300 }?.segment ?? card
             card = max(timed, translationTarget, 1)
+            translationStartMS = startMS
         }
         translationTarget = card
         translationText = ""
@@ -650,14 +690,27 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         if complete { settledTranslations[translationTarget] = text }
     }
 
-    private func endTranslation() {
+    private func endTranslation(at endMS: Int32 = 0) {
         guard translationOpen else { return }
         translationOpen = false
         emitTranslation(complete: true)
-        // Source sentences the translation went past without one of their
-        // own were folded into an earlier card; close theirs.
-        let folded = untranslated.filter { $0 < translationTarget }
-        untranslated.removeAll { $0 < translationTarget }
+        // End timestamps share the source clock. Complete later source cards
+        // already covered by this translation, without waiting for another
+        // translated sentence. A boundary touching the next start does not
+        // cover it, nor does a translation ending inside a known source span.
+        let covered: Set<Int>
+        if let startMS = translationStartMS, endMS > startMS {
+            covered = Set(sourceStarts.compactMap { source in
+                guard source.segment > translationTarget, source.startMS >= startMS,
+                      source.startMS < endMS, source.endMS.map({ $0 <= endMS }) ?? true else { return nil }
+                return source.segment
+            })
+        } else {
+            covered = []
+        }
+        let folded = untranslated.filter { $0 < translationTarget || covered.contains($0) }
+        let finished = Set(folded)
+        untranslated.removeAll { finished.contains($0) }
         for segment in folded { emit(.responseFinished("completed"), segment: segment) }
         // Only the last few cards can still be reached by a later part.
         settledTranslations = settledTranslations.filter { $0.key >= translationTarget - 4 }
@@ -667,6 +720,10 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
     private func closeOpenSegments() {
         if sourceOpen { endSource(at: 0, translates: config.targetLanguage != nil) }
         if translationOpen { endTranslation() }
+        // A session can end after several source sentences were merged into
+        // one untimed translation, or before a separate translation arrives.
+        for segment in untranslated { emit(.responseFinished("completed"), segment: segment) }
+        untranslated.removeAll()
     }
 
     private func resetSegments() {
@@ -674,6 +731,7 @@ nonisolated final class DoubaoTranslationClient: NSObject, LiveTranslationSessio
         translationTarget = 0
         sourceText = ""
         translationText = ""
+        translationStartMS = nil
         sourceOpen = false
         translationOpen = false
         untranslated.removeAll()

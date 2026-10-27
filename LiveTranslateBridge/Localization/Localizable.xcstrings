@@ -1,6 +1,57 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+    "agent.backend" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent backend"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代聊方式"
+          }
+        }
+      }
+    },
+    "agent.backend.chatAndTTS" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chat + TTS"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chat + TTS"
+          }
+        }
+      }
+    },
+    "agent.backend.doubaoRealtime" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doubao end-to-end realtime speech"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "豆包端到端实时语音"
+          }
+        }
+      }
+    },
     "agent.chat.apiKey" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -143,13 +194,30 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The AI answers in the other side's language, in your voice, from the material below, and the board shows both sides with translations. Speak or press Take Over at any time; your own words are still translated, in the same voice. Needs Doubao Speech credentials, a trained voice and a chat model, set in Settings › AI agent."
+            "value" : "The AI answers in the other side's language from the material below, and the board shows both sides with translations. Speak or press Take Over at any time; your own words are still translated, in the same voice. Needs Doubao Speech credentials and a chat model. A trained voice is optional; without one, it uses the selected stock voice or the default voice. Configure these in Settings › AI agent."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "AI 根据下面的资料用对方的语言、以你的声音应答，字幕板实时显示双方内容和译文。你随时开口或点「接管」即可介入，介入后你的话照常翻译成对方语言，音色不变。需要豆包语音凭据、已训练的声音复刻音色和对话模型，在 设置 › AI 代聊 中配置。"
+            "value" : "AI 根据下面的资料用对方的语言应答，字幕板实时显示双方内容和译文。你随时开口或点「接管」即可介入，介入后你的话照常翻译成对方语言，音色不变。需要豆包语音凭据和对话模型；声音复刻可选，未配置时使用选定的预置音色或默认音色。在 设置 › AI 代聊 中配置。"
+          }
+        }
+      }
+    },
+    "agent.footer.doubaoRealtime" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The AI listens to the other side and answers in their language using the material below. Speak or press Take Over at any time. This mode currently supports Chinese and English and uses a realtime preset voice. Set your Doubao API key in Settings › Credentials; a separate chat model is not required. The realtime voice is configured separately. Taking over uses the translation voice, so the voice may change."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 根据下面的资料直接听取对方语音，并用对方的语言应答。你随时开口或点「接管」即可介入。当前仅支持中文和英语，使用豆包实时预置音色。在 设置 › 凭据 中配置豆包 API Key，无需独立 Chat 模型。 实时音色独立设置；人工接管使用翻译音色，音色可能变化。"
           }
         }
       }
@@ -392,6 +460,754 @@
         }
       }
     },
+    "agent.realtime.briefNotice" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Changes to the goal or reference material during a call take effect the next time you hand the call back to AI."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通话中修改目标和资料，会在下一次交回 AI 时生效。"
+          }
+        }
+      }
+    },
+    "agent.realtime.languages" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Realtime AI calling currently supports Chinese and English only."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时 AI 代聊目前仅支持中文和英语。"
+          }
+        }
+      }
+    },
+    "agent.realtime.needsAPIKey" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Realtime speech requires a Doubao API Key; leave App ID empty in Credentials."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时语音需要新版豆包 API Key；请在凭据页将 App ID 留空。"
+          }
+        }
+      }
+    },
+    "agent.realtime.subtitleNotice" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Realtime replies show the spoken language only; a separate Chinese gloss is not available."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时回答仅显示所说语言，暂不提供独立中文释义。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.allocated" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allocated S_ voice (default)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已分配的 S_ 音色（默认）"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.apply" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use for realtime calls"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于实时通话"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.callRunning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "End the current call before training or switching voices."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通话运行期间不能训练或切换音色，请先结束通话。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.credentials" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save your Doubao speech API Key in Credentials first. This flow does not require an App ID."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先在「凭据」保存豆包语音 API Key。此流程不需要 App ID。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.custom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Postpaid custom voice"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "后付费自定义音色"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.customID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New custom voice ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新的自定义音色 ID"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.duration" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recording duration: %@ seconds"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音时长：%@ 秒"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.emptyID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a voice ID."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入音色 ID。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.en" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "English"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英文"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your API key also needs voice and Voice Cloning access. WAV, MP3, OGG, M4A, AAC or PCM, up to 10 MB. Use a clear 14–30 second recording of one speaker, preferably WAV, in Chinese or English. Raw PCM must be 24 kHz, mono, 16-bit. Training submits once, with no automatic retry, activation or playback. After training succeeds, explicitly choose Use for realtime calls."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API Key 还需开通音色服务和声音复刻权限。支持 WAV、MP3、OGG、M4A、AAC、PCM，最大 10 MB；建议 14–30 秒清晰单人 WAV，仅中文或英文。裸 PCM 必须为 24 kHz、单声道、16 位。训练只提交一次，不自动重试、激活或播放录音。训练成功后请显式选择「用于实时通话」。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.kind" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice slot"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音色槽位"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.language" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recording language"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音语言"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.missingCredentials" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doubao speech credentials are missing."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未配置豆包语音凭据。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.noSample" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a recording first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先选择录音。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.notFound" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The voice was not found by the service."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务中没有找到此音色。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.postpaid" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Postpaid voices require Voice Cloning 2.0 and postpaid voice services. Training does not charge a slot fee. First formal synthesis charges the console slot price and locks the voice against retraining. Unused trial voices are deleted after 7 days."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "后付费需要先开通声音复刻 2.0 和后付费音色服务。训练不收槽位费；首次正式语音合成会按控制台价格收取音色槽位费，并锁定该音色，无法再次训练。未正式使用的音色 7 天后自动删除。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.prepaid" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter an unused S_ voice ID allocated in the console. Uploading to an existing voice replaces its previous training and consumes a training attempt."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请填写控制台已分配的空闲 S_ 音色 ID。上传到已有音色会覆盖上一次复刻效果并消耗一次训练次数。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.queryRequestID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query request ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询请求 ID"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.queryRequired" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This submission is not yet resolved. Query the existing voice before another upload. The voice ID and request ID survive closing Settings; the recovery record contains no recording or API Key."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这次提交尚未确认完成。请先查询原音色状态；不会重新上传或重复训练。关闭设置后仍会保留音色 ID 和请求 ID，录音及 API Key 不会写入这条恢复记录。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.remaining" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remaining training attempts"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余训练次数"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.requestID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Request ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求 ID"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.returnedID" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Returned voice ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务返回的音色 ID"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Realtime speech · Train a voice from a recording"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时语音 · 上传录音训练音色"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.select" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose recording"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择录音"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.active" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The voice is active and can now be selected."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音色已激活，可选择此音色。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The service reports that training failed. Check the recording and transcript before another submission."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务报告训练失败。请检查录音及文字后再提交。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.idle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Training has not been submitted."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未提交训练。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.querying" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Querying voice status."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在查询音色状态。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.ready" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Training succeeded. This voice can now be selected."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "训练成功，可选择此音色。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.rejected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The request was not accepted. Review the details. It was not retried."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求未获接受，请查看原因；未自动重试。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.submitting" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uploading and training. Waiting for this request."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在上传并训练，请等待本次请求结果。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.training" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Training is in progress. Query again later."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务正在训练，请稍后手动查询。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.status.unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The training outcome is unknown. Query first to avoid a duplicate submission."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本次训练结果未知。请先查询，避免重复训练。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.submit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Upload and train once"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上传并训练一次"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.tooLarge" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The recording exceeds 10 MB. Choose a smaller sample."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音文件超过 10 MB，请选择较小的样音。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.unknownQuota" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The service did not return a remaining attempt count."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务未返回剩余次数。"
+          }
+        }
+      }
+    },
+    "agent.realtime.training.zh" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chinese"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文"
+          }
+        }
+      }
+    },
+    "agent.realtime.voice" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Realtime conversation voice"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时对话音色"
+          }
+        }
+      }
+    },
+    "agent.settings.backend.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The chat model generates replies and Doubao TTS produces the speech. Configure the chat model below; voice cloning is optional."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chat 模型负责生成回答，豆包 TTS 负责合成语音。请填写下面的对话模型配置；声音复刻为可选。"
+          }
+        }
+      }
+    },
+    "agent.settings.doubaoRealtime.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a Doubao API key with Realtime Speech Model access in Settings › Credentials. This mode supports Chinese and English, with a preset or V3 cloned voice. No separate chat model is required. To clone your voice, use the training section below with voice and Voice Cloning access. Taking over uses the translation voice, so the voice may change."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在 设置 › 凭据 中填写已开通「实时语音大模型」的豆包 API Key。当前支持中文和英语，可用预置或 V3 复刻音色，无需另配 Chat 模型。复刻本人声音请在下方训练区操作，需另有音色服务和声音复刻权限；人工接管使用翻译音色，音色可能变化。"
+          }
+        }
+      }
+    },
     "agent.speakFirst" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -439,6 +1255,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "开始会话后启用"
+          }
+        }
+      }
+    },
+    "agent.status.connecting" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connecting realtime speech…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在连接实时语音…"
           }
         }
       }
@@ -636,13 +1469,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Get a voice ID under Voice Cloning in the Doubao Speech console, then upload 10–30 seconds of yourself speaking clearly. Once set, both the AI and your own translated speech use this voice, so the other side hears the same voice before and after you take over."
+            "value" : "Optional: get a voice ID under Voice Cloning in the Doubao Speech console, then upload 10–30 seconds of yourself speaking clearly. Once set, both the AI and your own translated speech use this voice. Leave it empty to use the selected stock voice or the default voice."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在豆包语音控制台的「声音复刻」中领取音色 ID，再上传 10–30 秒清晰的本人录音完成训练。填写后，AI 代聊和你自己说话的译文都使用这个音色，接管前后对方听到的声音一致。"
+            "value" : "可选：在豆包语音控制台的「声音复刻」中领取音色 ID，再上传 10–30 秒清晰的本人录音完成训练。填写后，AI 代聊和你自己说话的译文都使用这个音色；留空则使用选定的预置音色或默认音色。"
           }
         }
       }
@@ -2126,9 +2959,7 @@
         }
       }
     },
-    "LiveTranslate Bridge" : {
-
-    },
+    "LiveTranslate Bridge" : {},
     "log.category.audio" : {
       "extractionState" : "manual",
       "localizations" : {

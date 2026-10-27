@@ -88,6 +88,17 @@ nonisolated struct CredentialStore {
 
         var isComplete: Bool { !accessToken.isEmpty }
 
+        /// AI replies and our translated speech share the selected timbre.
+        /// A trained voice is optional; an empty setup uses the same stock
+        /// default as the interpretation client.
+        var agentSpeakerID: String {
+            for candidate in [cloneSpeakerID, speakerID] {
+                let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+            return DoubaoTranslationClient.defaultSpeakerID
+        }
+
         init(appID: String, accessToken: String, speakerID: String = "",
              cloneSpeakerID: String = "") {
             self.appID = appID

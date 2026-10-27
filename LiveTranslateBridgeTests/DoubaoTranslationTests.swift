@@ -51,6 +51,8 @@ struct DoubaoProtocolTests {
         let target = try fields(bytes(top[5]?.first)!)
         #expect(string(target[4]?.first) == "pcm")
         #expect(varint(target[7]?.first) == 24_000)
+        // The service's 24 kHz PCM is Float32, regardless of a 16-bit request.
+        #expect(varint(target[8]?.first) == 32)
 
         let params = try fields(bytes(top[6]?.first)!)
         #expect(string(params[1]?.first) == "s2s")
@@ -58,7 +60,7 @@ struct DoubaoProtocolTests {
         #expect(string(params[3]?.first) == "en")
         // No speaker: the service clones the voice.
         #expect(params[4] == nil)
-        #expect(params[6] == nil)
+        #expect(params[8] == nil)
         let corpus = try fields(bytes(params[100]?.first)!)
         let entry = try fields(bytes(corpus[10]?.first)!)
         #expect(string(entry[1]?.first) == "豆包")
@@ -74,6 +76,21 @@ struct DoubaoProtocolTests {
         let top = try fields(frame)
         #expect(top[5] == nil)
         #expect(string(try fields(bytes(top[6]?.first)!)[1]?.first) == "s2t")
+    }
+
+    @Test func customVoiceUsesTheCurrentProtobufFieldNumbers() throws {
+        let frame = DoubaoProtocol.startSession(.init(
+            sessionID: "s", userID: "u", mode: .speechToSpeech,
+            sourceLanguage: "zh", targetLanguage: "en", speakerID: "S_test",
+            isCustomSpeaker: true, ttsResourceID: "seed-icl-2.0"
+        ))
+        let top = try fields(frame)
+        let params = try fields(bytes(top[6]?.first)!)
+        #expect(varint(params[7]?.first) == 1)
+        #expect(string(params[8]?.first) == "seed-icl-2.0")
+        // These now mean speech_rate and enable_source_language_detect.
+        #expect(params[5] == nil)
+        #expect(params[6] == nil)
     }
 
     @Test func audioChunkIsATaskRequestWithBinaryData() throws {
@@ -119,6 +136,15 @@ struct DoubaoProtocolTests {
         #expect(DoubaoTranslationClient.join("A long", "sentence.", language: "en") == "A long sentence.")
         #expect(DoubaoTranslationClient.join("很长的", "一句话", language: "zh") == "很长的一句话")
         #expect(DoubaoTranslationClient.join("", "x", language: "en") == "x")
+    }
+
+    @Test func floatAudioClipsSafelyAndRejectsPartialSamples() {
+        let floats: [Float] = [-2, -1, 0, 1, 2, .nan, .infinity]
+        let input = floats.withUnsafeBytes { Data($0) }
+        #expect(DoubaoTranslationClient.playerPCM(from: input) == Data([
+            0, 0x80, 0, 0x80, 0, 0, 0xFF, 0x7F, 0xFF, 0x7F, 0, 0, 0, 0,
+        ]))
+        #expect(DoubaoTranslationClient.playerPCM(from: Data([0, 0, 0])) == nil)
     }
 }
 
@@ -213,12 +239,13 @@ private final class EventLog: @unchecked Sendable {
 
 struct DoubaoClientEventTests {
     private func frame(
-        _ event: Int32, _ text: String = "", start: Int32 = 0, audio: Data = Data()
+        _ event: Int32, _ text: String = "", start: Int32 = 0, end: Int32 = 0, audio: Data = Data()
     ) -> DoubaoProtocol.Response {
         var response = DoubaoProtocol.Response()
         response.event = event
         response.text = text
         response.startTime = start
+        response.endTime = end
         response.data = audio
         return response
     }
@@ -282,6 +309,90 @@ struct DoubaoClientEventTests {
         client.close()
     }
 
+    @Test(arguments: [Int32(0), Int32(4_000)])
+    func aTimedTranslationImmediatelyClosesEveryCoveredSourceCard(_ sourceEnd: Int32) {
+        let (client, log) = client()
+        client.applyForTesting(frame(150))
+        client.applyForTesting(frame(650, start: 1_000))
+        client.applyForTesting(frame(652, "第一句", end: 2_000))
+        client.applyForTesting(frame(650, start: 3_000))
+        client.applyForTesting(frame(652, "第二句", end: sourceEnd))
+        client.applyForTesting(frame(650, start: 5_000))
+        client.applyForTesting(frame(652, "第三句", end: 6_000))
+        client.applyForTesting(frame(653, start: 1_000))
+        client.applyForTesting(frame(655, "One and two.", start: 1_000, end: 4_000))
+        #expect(log.segments.suffix(2) == [
+            "seg-1:translationComplete:One and two.",
+            "seg-2:responseFinished:completed",
+        ])
+        #expect(!log.segments.contains("seg-3:responseFinished:completed"))
+        client.close()
+    }
+
+    @Test func translationPartsLeaveTheFollowingSourceCardOpen() {
+        let (client, log) = client()
+        client.applyForTesting(frame(150))
+        client.applyForTesting(frame(650, start: 1_000))
+        client.applyForTesting(frame(652, "很长的一句话", end: 2_800))
+        client.applyForTesting(frame(650, start: 3_000))
+        client.applyForTesting(frame(652, "下一句", end: 4_000))
+        client.applyForTesting(frame(653, start: 1_000))
+        client.applyForTesting(frame(655, "A long", start: 1_000, end: 1_800))
+        client.applyForTesting(frame(653, start: 1_800))
+        client.applyForTesting(frame(655, "sentence.", start: 1_800, end: 2_800))
+        #expect(log.segments.last == "seg-1:translationComplete:A long sentence.")
+        #expect(!log.segments.contains("seg-2:responseFinished:completed"))
+        client.close()
+    }
+
+    @Test func aTranslationDoesNotCloseAnUncoveredOrPartiallyCoveredSource() {
+        let ends: [Int32] = [3_000, 4_000]
+        for end in ends {
+            let (client, log) = client()
+            client.applyForTesting(frame(150))
+            client.applyForTesting(frame(650, start: 1_000))
+            client.applyForTesting(frame(652, "第一句", end: 2_000))
+            client.applyForTesting(frame(650, start: 3_000))
+            client.applyForTesting(frame(652, "第二句", end: 5_000))
+            client.applyForTesting(frame(653, start: 1_000))
+            client.applyForTesting(frame(655, "First.", start: 1_000, end: end))
+            #expect(!log.segments.contains("seg-2:responseFinished:completed"))
+            client.close()
+        }
+    }
+
+    @Test func missingOrInvalidTranslationTimingDoesNotGuessLaterCoverage() {
+        let timings: [(Int32, Int32)] = [(0, 4_000), (1_000, 0), (1_000, 500)]
+        for (start, end) in timings {
+            let (client, log) = client()
+            client.applyForTesting(frame(150))
+            client.applyForTesting(frame(650, start: 1_000)); client.applyForTesting(frame(652, "第一句"))
+            client.applyForTesting(frame(650, start: 3_000)); client.applyForTesting(frame(652, "第二句"))
+            client.applyForTesting(frame(653, start: start))
+            client.applyForTesting(frame(655, "First.", start: start, end: end))
+            #expect(!log.segments.contains("seg-2:responseFinished:completed"))
+            client.close()
+        }
+    }
+
+    @Test func sessionEndClosesSourcesWithNoSeparateTranslationExactlyOnce() {
+        let (client, log) = client()
+        client.applyForTesting(frame(150))
+        client.applyForTesting(frame(650)); client.applyForTesting(frame(652, "嗯"))
+        client.applyForTesting(frame(650)); client.applyForTesting(frame(652, "好的"))
+        client.applyForTesting(frame(653)); client.applyForTesting(frame(655, "Mm."))
+        client.applyForTesting(frame(650)); client.applyForTesting(frame(651, "还没分句"))
+        // Retire the transport before injecting its final response: this test
+        // exercises segment finalization without scheduling a real reconnect.
+        client.close()
+        client.applyForTesting(frame(152))
+        client.applyForTesting(frame(152))
+        #expect(log.segments.filter { $0 == "seg-2:responseFinished:completed" }.count == 1)
+        #expect(log.segments.filter { $0 == "seg-3:responseFinished:completed" }.count == 1)
+        #expect(log.segments.contains("seg-3:transcriptComplete:还没分句"))
+        #expect(!log.segments.contains("seg-1:responseFinished:completed"))
+    }
+
     @Test func untimedTranslationsPairInOrder() {
         let (client, log) = client()
         client.applyForTesting(frame(150))
@@ -306,13 +417,16 @@ struct DoubaoClientEventTests {
     @Test func synthesisedSpeechGoesStraightToPlayback() {
         let (client, log) = client()
         client.applyForTesting(frame(150))
-        client.applyForTesting(frame(352, audio: Data([0, 1, 2, 3])))
-        client.applyForTesting(frame(351))
+        // Real same-translation API payloads are 24 kHz Float32 LE. Both
+        // ordinary audio frames and sentence-end frames can contain samples.
+        client.applyForTesting(frame(352, audio: Data([0, 0, 0, 0xBF, 0, 0, 0, 0])))
+        client.applyForTesting(frame(351, audio: Data([0, 0, 0, 0x3F])))
         let audio = log.all.compactMap { event -> Data? in
             if case .audio(let data) = event { return data }
             return nil
         }
-        #expect(audio == [Data([0, 1, 2, 3])])
+        // The player takes signed Int16 LE: -0.5, 0, +0.5.
+        #expect(audio == [Data([0, 0xC0, 0, 0]), Data([0, 0x40])])
         #expect(log.all.contains { if case .audioComplete = $0 { return true }; return false })
         client.close()
     }
@@ -332,4 +446,12 @@ struct DoubaoClientEventTests {
         #expect(log.all.contains { if case .failed = $0 { return true }; return false })
         client.close()
     }
+
+    @Test func aClosedSessionIsNeverReady() async {
+        let (client, _) = client()
+        client.markStartedForTesting()
+        client.close()
+        #expect(await client.waitUntilReady(timeout: 0.1) == false)
+    }
+
 }
