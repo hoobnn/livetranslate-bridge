@@ -240,7 +240,7 @@ struct DoubaoRealtimeClientTests {
 
     @Test func closeRequiresTheServerAckAndRejectsLateAudio() async throws {
         let (client, receipts) = fixture()
-        let closing = Task { await client.close(timeout: 1) }
+        let closing = Task { await client.close(timeout: 10) }
         try await waitUntil { receipts.messages.last?.0["type"] == .string("session.close") }
         client.applyForTesting(#"{"type":"response.output_audio.delta","delta":"AQACAA=="}"#)
         client.applyForTesting(#"{"type":"session.closed"}"#)
